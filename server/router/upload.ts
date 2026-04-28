@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify'
 import { splitTextToChunks } from '../utils/chunker'
 import { createRequire } from 'module'
 import { getEmbeddings } from '../utils/embedding'
+import {addChunks} from "../utils/vectorStore";
+
 const require = createRequire(import.meta.url)
 const pdfParse = require('pdf-parse')
 export async function uploadRoutes(app: FastifyInstance) {
@@ -35,6 +37,11 @@ export async function uploadRoutes(app: FastifyInstance) {
             ...chunk,
             embedding: embeddings[i],
         }))
+        addChunks(result.map(chunk => ({
+            text: chunk.text,
+            embedding: chunk.embedding,
+            filename: file.filename,
+        })))
 
         return reply.send({
             filename: file.filename,
