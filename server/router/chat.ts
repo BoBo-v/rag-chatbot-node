@@ -2,6 +2,7 @@
 import type { FastifyInstance } from 'fastify'
 import {getEmbeddings} from "../utils/embedding";
 import {search} from "../utils/vectorStore";
+import {getAllDefinitions} from "../utils/tools";
 const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434'
 const defaultModel = process.env.DEFAULT_MODEL || 'qwen2.5:7b'
 
@@ -31,6 +32,7 @@ export async function chatRoutes(app: FastifyInstance) {
                 body: JSON.stringify({
                     model: body.model||defaultModel,
                     messages:body.messages,
+                    tools: getAllDefinitions(),
                     stream: true,
                 }),
             })
