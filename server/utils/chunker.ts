@@ -145,7 +145,7 @@ function getOverlapText(text: string, overlap: number): string {
 function isHeading(text: string): boolean {
     if (text.length > 80) return false
     if (/^#{1,6}\s+\S+/.test(text)) return true
-    if (/^\d+(\.\d+)*[.)、]\s*\S+/.test(text)) return true
-    if (/^[一二三四五六七八九十]+[、.]\s*\S+/.test(text)) return true
+    if (/^\d+(\.\d+)*[.)\u3001]\s*\S+/.test(text)) return true
+    if (/^[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+[\u3001.]\s*\S+/.test(text)) return true
     return /^[^\u3002\uff01\uff1f.!?]{2,40}$/.test(text)
 }

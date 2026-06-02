@@ -55,6 +55,7 @@ interface AddFileInput {
 const storePath = path.resolve(process.cwd(), config.vectorStorePath)
 const store: VectorStoreData = { files: [], chunks: [] }
 let loaded = false
+let writeQueue = Promise.resolve()
 
 export async function addFileWithChunks(input: AddFileInput): Promise<StoredFile> {
     await loadStore()
@@ -83,7 +84,7 @@ export async function addFileWithChunks(input: AddFileInput): Promise<StoredFile
 
     store.files.push(file)
     store.chunks.push(...chunks)
-    await saveStore()
+    await enqueueSave()
 
     return file
 }
@@ -152,7 +153,7 @@ export async function deleteFile(fileId: string): Promise<boolean> {
 
     store.files.splice(fileIndex, 1)
     store.chunks = store.chunks.filter(chunk => chunk.fileId !== fileId)
-    await saveStore()
+    await enqueueSave()
 
     return true
 }
@@ -176,6 +177,11 @@ async function loadStore(): Promise<void> {
 async function saveStore(): Promise<void> {
     await mkdir(path.dirname(storePath), { recursive: true })
     await writeFile(storePath, JSON.stringify(store, null, 2), 'utf-8')
+}
+
+async function enqueueSave(): Promise<void> {
+    writeQueue = writeQueue.then(saveStore, saveStore)
+    return writeQueue
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {

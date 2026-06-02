@@ -10,54 +10,60 @@ const pdfParse = require('pdf-parse')
 
 export async function uploadRoutes(app: FastifyInstance) {
     app.post('/api/upload', async (request, reply) => {
-        const file = await request.file()
-        if (!file) {
-            reply.status(400)
-            return reply.send({ error: 'Please upload a file' })
-        }
+        try {
+            const file = await request.file()
+            if (!file) {
+                reply.status(400)
+                return reply.send({ error: 'Please upload a file' })
+            }
 
-        const buffer = await file.toBuffer()
-        const ext = file.filename.split('.').pop()?.toLowerCase()
-        let text = ''
+            const buffer = await file.toBuffer()
+            const ext = file.filename.split('.').pop()?.toLowerCase()
+            let text = ''
 
-        if (ext === 'txt') {
-            text = buffer.toString('utf-8')
-        } else if (ext === 'pdf') {
-            const data = await pdfParse(buffer)
-            text = data.text
-        } else {
-            reply.status(400)
-            return reply.send({ error: 'Unsupported file type. Only txt and pdf are supported.' })
-        }
+            if (ext === 'txt') {
+                text = buffer.toString('utf-8')
+            } else if (ext === 'pdf') {
+                const data = await pdfParse(buffer)
+                text = data.text
+            } else {
+                reply.status(400)
+                return reply.send({ error: 'Unsupported file type. Only txt and pdf are supported.' })
+            }
 
-        const chunks = splitTextToChunks(text, config.chunkMaxLen, config.chunkOverlap)
-        if (chunks.length === 0) {
-            reply.status(400)
-            return reply.send({ error: 'No readable text found in this file' })
-        }
+            const chunks = splitTextToChunks(text, config.chunkMaxLen, config.chunkOverlap)
+            if (chunks.length === 0) {
+                reply.status(400)
+                return reply.send({ error: 'No readable text found in this file' })
+            }
 
-        const embeddings = await getEmbeddings(chunks.map(c => c.text))
-        const chunkInputs = chunks.map((chunk, i) => ({
-            text: chunk.text,
-            embedding: embeddings[i],
-            chunkIndex: chunk.index,
-        }))
-
-        const storedFile = await addFileWithChunks({
-            filename: file.filename,
-            mimeType: file.mimetype,
-            size: buffer.length,
-            charCount: text.length,
-            chunks: chunkInputs,
-        })
-
-        return reply.send({
-            file: storedFile,
-            chunks: chunkInputs.map(chunk => ({
+            const embeddings = await getEmbeddings(chunks.map(c => c.text))
+            const chunkInputs = chunks.map((chunk, i) => ({
                 text: chunk.text,
-                chunkIndex: chunk.chunkIndex,
-            })),
-        })
+                embedding: embeddings[i],
+                chunkIndex: chunk.index,
+            }))
+
+            const storedFile = await addFileWithChunks({
+                filename: file.filename,
+                mimeType: file.mimetype,
+                size: buffer.length,
+                charCount: text.length,
+                chunks: chunkInputs,
+            })
+
+            return reply.send({
+                file: storedFile,
+                chunks: chunkInputs.map(chunk => ({
+                    text: chunk.text,
+                    chunkIndex: chunk.chunkIndex,
+                })),
+            })
+        } catch (err) {
+            request.log.error(err)
+            reply.status(502)
+            return reply.send({ error: 'Failed to parse, embed, or store uploaded file' })
+        }
     })
 
     app.get('/api/files', async () => {
@@ -101,18 +107,20 @@ export async function uploadRoutes(app: FastifyInstance) {
             return reply.send({ error: 'q is required' })
         }
 
+        const topK = parseBoundedNumber(query.topK, config.ragTopK, 1, 20)
+        const minScore = parseBoundedNumber(query.minScore, config.ragMinScore, 0, 1)
         const [embedding] = await getEmbeddings([query.q])
         const results = await search(embedding, {
-            topK: parseNumber(query.topK, config.ragTopK),
-            minScore: parseNumber(query.minScore, config.ragMinScore),
+            topK,
+            minScore,
             fileId: query.fileId,
             query: query.q,
         })
 
         return {
             query: query.q,
-            topK: parseNumber(query.topK, config.ragTopK),
-            minScore: parseNumber(query.minScore, config.ragMinScore),
+            topK,
+            minScore,
             results: results.map(result => ({
                 id: result.id,
                 fileId: result.fileId,
@@ -128,9 +136,10 @@ export async function uploadRoutes(app: FastifyInstance) {
     })
 }
 
-function parseNumber(value: string | undefined, fallback: number): number {
+function parseBoundedNumber(value: string | undefined, fallback: number, min: number, max: number): number {
     if (!value) return fallback
 
     const parsed = Number(value)
-    return Number.isFinite(parsed) ? parsed : fallback
+    if (!Number.isFinite(parsed)) return fallback
+    return Math.min(max, Math.max(min, parsed))
 }
