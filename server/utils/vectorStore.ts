@@ -28,6 +28,10 @@ export interface SearchResult extends StoredChunk {
     score: number
 }
 
+export interface FileDetail extends StoredFile {
+    chunks: Array<Omit<StoredChunk, 'embedding'> & { embeddingSize: number }>
+}
+
 interface VectorStoreData {
     files: StoredFile[]
     chunks: StoredChunk[]
@@ -84,13 +88,16 @@ export async function addFileWithChunks(input: AddFileInput): Promise<StoredFile
 
 export async function search(
     queryEmbedding: number[],
-    options: { topK?: number; minScore?: number } = {}
+    options: { topK?: number; minScore?: number; fileId?: string } = {}
 ): Promise<SearchResult[]> {
     await loadStore()
 
     const topK = options.topK ?? config.ragTopK
     const minScore = options.minScore ?? config.ragMinScore
-    const scored = store.chunks.map(chunk => ({
+    const chunks = options.fileId
+        ? store.chunks.filter(chunk => chunk.fileId === options.fileId)
+        : store.chunks
+    const scored = chunks.map(chunk => ({
         ...chunk,
         score: cosineSimilarity(queryEmbedding, chunk.embedding),
     }))
@@ -104,6 +111,39 @@ export async function search(
 export async function listFiles(): Promise<StoredFile[]> {
     await loadStore()
     return [...store.files]
+}
+
+export async function getFileDetail(fileId: string): Promise<FileDetail | null> {
+    await loadStore()
+
+    const file = store.files.find(item => item.id === fileId)
+    if (!file) return null
+
+    const chunks = store.chunks
+        .filter(chunk => chunk.fileId === fileId)
+        .sort((a, b) => a.chunkIndex - b.chunkIndex)
+        .map(chunk => {
+            const { embedding, ...rest } = chunk
+            return {
+                ...rest,
+                embeddingSize: embedding.length,
+            }
+        })
+
+    return { ...file, chunks }
+}
+
+export async function deleteFile(fileId: string): Promise<boolean> {
+    await loadStore()
+
+    const fileIndex = store.files.findIndex(item => item.id === fileId)
+    if (fileIndex === -1) return false
+
+    store.files.splice(fileIndex, 1)
+    store.chunks = store.chunks.filter(chunk => chunk.fileId !== fileId)
+    await saveStore()
+
+    return true
 }
 
 async function loadStore(): Promise<void> {

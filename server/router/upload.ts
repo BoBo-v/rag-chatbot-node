@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { createRequire } from 'node:module'
 import { splitTextToChunks } from '../utils/chunker'
 import { getEmbeddings } from '../utils/embedding'
-import { addFileWithChunks, listFiles } from '../utils/vectorStore'
+import { addFileWithChunks, deleteFile, getFileDetail, listFiles, search } from '../utils/vectorStore'
 import { config } from '../utils/config'
 
 const require = createRequire(import.meta.url)
@@ -63,4 +63,71 @@ export async function uploadRoutes(app: FastifyInstance) {
     app.get('/api/files', async () => {
         return { files: await listFiles() }
     })
+
+    app.get('/api/files/:id', async (request, reply) => {
+        const params = request.params as { id: string }
+        const file = await getFileDetail(params.id)
+
+        if (!file) {
+            reply.status(404)
+            return reply.send({ error: 'File not found' })
+        }
+
+        return { file }
+    })
+
+    app.delete('/api/files/:id', async (request, reply) => {
+        const params = request.params as { id: string }
+        const deleted = await deleteFile(params.id)
+
+        if (!deleted) {
+            reply.status(404)
+            return reply.send({ error: 'File not found' })
+        }
+
+        return { ok: true }
+    })
+
+    app.get('/api/search', async (request, reply) => {
+        const query = request.query as {
+            q?: string
+            topK?: string
+            minScore?: string
+            fileId?: string
+        }
+
+        if (!query.q || typeof query.q !== 'string') {
+            reply.status(400)
+            return reply.send({ error: 'q is required' })
+        }
+
+        const [embedding] = await getEmbeddings([query.q])
+        const results = await search(embedding, {
+            topK: parseNumber(query.topK, config.ragTopK),
+            minScore: parseNumber(query.minScore, config.ragMinScore),
+            fileId: query.fileId,
+        })
+
+        return {
+            query: query.q,
+            topK: parseNumber(query.topK, config.ragTopK),
+            minScore: parseNumber(query.minScore, config.ragMinScore),
+            results: results.map(result => ({
+                id: result.id,
+                fileId: result.fileId,
+                filename: result.filename,
+                chunkIndex: result.chunkIndex,
+                score: result.score,
+                text: result.text,
+                pageNumber: result.pageNumber,
+            })),
+        }
+    })
+}
+
+function parseNumber(value: string | undefined, fallback: number): number {
+    if (!value) return fallback
+
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : fallback
 }
