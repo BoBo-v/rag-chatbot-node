@@ -24,6 +24,7 @@ export async function chatRoutes(app: FastifyInstance) {
             const relevant = await search(embeddings[0], {
                 topK: config.ragTopK,
                 minScore: config.ragMinScore,
+                query: lastMessage.content,
             })
 
             const messages = [...body.messages]
@@ -86,7 +87,7 @@ function buildRagSystemPrompt(chunks: SearchResult[]): string {
         .map(chunk => {
             const page = chunk.pageNumber ? `, page=${chunk.pageNumber}` : ''
             return [
-                `[source:${chunk.filename}, chunk=${chunk.chunkIndex}, score=${chunk.score.toFixed(4)}${page}]`,
+                `[source:${chunk.filename}, chunk=${chunk.chunkIndex}, score=${chunk.score.toFixed(4)}, vector=${chunk.vectorScore.toFixed(4)}, keyword=${chunk.keywordScore.toFixed(4)}${page}]`,
                 chunk.text,
             ].join('\n')
         })

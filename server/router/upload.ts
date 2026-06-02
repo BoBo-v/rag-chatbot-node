@@ -106,6 +106,7 @@ export async function uploadRoutes(app: FastifyInstance) {
             topK: parseNumber(query.topK, config.ragTopK),
             minScore: parseNumber(query.minScore, config.ragMinScore),
             fileId: query.fileId,
+            query: query.q,
         })
 
         return {
@@ -118,6 +119,8 @@ export async function uploadRoutes(app: FastifyInstance) {
                 filename: result.filename,
                 chunkIndex: result.chunkIndex,
                 score: result.score,
+                vectorScore: result.vectorScore,
+                keywordScore: result.keywordScore,
                 text: result.text,
                 pageNumber: result.pageNumber,
             })),

@@ -15,6 +15,8 @@ export const config = {
     embeddingModel: process.env.EMBEDDING_MODEL || 'nomic-embed-text',
     ragTopK: numberFromEnv('RAG_TOP_K', 5),
     ragMinScore: numberFromEnv('RAG_MIN_SCORE', 0.35),
+    ragVectorWeight: numberFromEnv('RAG_VECTOR_WEIGHT', 0.8),
+    ragKeywordWeight: numberFromEnv('RAG_KEYWORD_WEIGHT', 0.2),
     chunkMaxLen: numberFromEnv('CHUNK_MAX_LEN', 700),
     chunkOverlap: numberFromEnv('CHUNK_OVERLAP', 100),
     vectorStorePath: process.env.VECTOR_STORE_PATH || 'server/data/vector-store.json',

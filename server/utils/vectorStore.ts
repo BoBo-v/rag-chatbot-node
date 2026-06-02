@@ -26,6 +26,8 @@ export interface StoredChunk {
 
 export interface SearchResult extends StoredChunk {
     score: number
+    vectorScore: number
+    keywordScore: number
 }
 
 export interface FileDetail extends StoredFile {
@@ -88,19 +90,28 @@ export async function addFileWithChunks(input: AddFileInput): Promise<StoredFile
 
 export async function search(
     queryEmbedding: number[],
-    options: { topK?: number; minScore?: number; fileId?: string } = {}
+    options: { topK?: number; minScore?: number; fileId?: string; query?: string } = {}
 ): Promise<SearchResult[]> {
     await loadStore()
 
     const topK = options.topK ?? config.ragTopK
     const minScore = options.minScore ?? config.ragMinScore
+    const queryTokens = tokenize(options.query ?? '')
     const chunks = options.fileId
         ? store.chunks.filter(chunk => chunk.fileId === options.fileId)
         : store.chunks
-    const scored = chunks.map(chunk => ({
-        ...chunk,
-        score: cosineSimilarity(queryEmbedding, chunk.embedding),
-    }))
+    const scored = chunks.map(chunk => {
+        const vectorScore = cosineSimilarity(queryEmbedding, chunk.embedding)
+        const keywordScore = keywordSimilarity(queryTokens, chunk.text)
+        const score = combineScores(vectorScore, keywordScore)
+
+        return {
+            ...chunk,
+            score,
+            vectorScore,
+            keywordScore,
+        }
+    })
 
     return scored
         .filter(chunk => chunk.score >= minScore)
@@ -182,4 +193,45 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
     if (normA === 0 || normB === 0) return 0
     return dot / (Math.sqrt(normA) * Math.sqrt(normB))
+}
+
+function combineScores(vectorScore: number, keywordScore: number): number {
+    const vectorWeight = Math.max(0, config.ragVectorWeight)
+    const keywordWeight = Math.max(0, config.ragKeywordWeight)
+    const totalWeight = vectorWeight + keywordWeight
+
+    if (totalWeight === 0) return vectorScore
+    return ((vectorScore * vectorWeight) + (keywordScore * keywordWeight)) / totalWeight
+}
+
+function keywordSimilarity(queryTokens: string[], text: string): number {
+    if (queryTokens.length === 0) return 0
+
+    const normalizedText = normalizeForKeyword(text)
+    let matchedWeight = 0
+    let totalWeight = 0
+
+    for (const token of queryTokens) {
+        const weight = token.length >= 4 ? 2 : 1
+        totalWeight += weight
+
+        if (normalizedText.includes(token)) {
+            matchedWeight += weight
+        }
+    }
+
+    return totalWeight === 0 ? 0 : matchedWeight / totalWeight
+}
+
+function tokenize(text: string): string[] {
+    const normalized = normalizeForKeyword(text)
+    const tokens = normalized.match(/[a-z0-9_./:-]+|[\u4e00-\u9fa5]{2,}/g) || []
+    return Array.from(new Set(tokens.filter(token => token.length >= 2)))
+}
+
+function normalizeForKeyword(text: string): string {
+    return text
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim()
 }
