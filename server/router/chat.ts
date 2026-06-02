@@ -18,34 +18,56 @@ interface ChatRequestBody {
 }
 
 export async function chatRoutes(app: FastifyInstance) {
+    app.post('/api/chat/context', {
+        schema: {
+            tags: ['Chat'],
+            summary: '调试对话 RAG 上下文',
+            description: '只执行与 /api/chat 相同的 RAG 检索，不调用 Ollama，用于检查将要注入的引用上下文。',
+            body: chatRequestBodySchema(),
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        enabled: { type: 'boolean', description: '本次是否启用 RAG' },
+                        prompt: { type: 'string', description: '将要注入的 system prompt。未命中时为空字符串。' },
+                        results: {
+                            type: 'array',
+                            items: { $ref: 'SearchResult#' },
+                        },
+                    },
+                },
+                400: { $ref: 'ErrorResponse#' },
+                502: { $ref: 'ErrorResponse#' },
+            },
+        },
+    }, async (request, reply) => {
+        const body = request.body as ChatRequestBody
+        const validation = validateChatBody(body)
+        if (validation) {
+            reply.status(400)
+            return reply.send({ error: validation })
+        }
+
+        try {
+            const context = await buildRagContext(body)
+            return {
+                enabled: context.enabled,
+                prompt: context.prompt,
+                results: context.results.map(toSearchResultResponse),
+            }
+        } catch (err) {
+            request.log.error(err)
+            reply.status(502)
+            return reply.send({ error: 'Failed to retrieve RAG context' })
+        }
+    })
+
     app.post('/api/chat', {
         schema: {
             tags: ['Chat'],
             summary: 'RAG 对话',
             description: '根据最后一条用户消息检索相关知识库片段，注入 system 上下文后调用 Ollama chat 接口。可通过 rag=false 关闭 RAG。',
-            body: {
-                type: 'object',
-                required: ['messages'],
-                properties: {
-                    model: { type: 'string', default: config.defaultModel, description: '可选，Ollama 对话模型名称' },
-                    rag: { type: 'boolean', default: true, description: '是否启用 RAG 检索。设为 false 时只调用模型，不注入知识库上下文。' },
-                    fileId: { type: 'string', description: '可选，限定只检索某个已上传文件。' },
-                    topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK, description: '可选，覆盖本次 RAG 返回数量。' },
-                    minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore, description: '可选，覆盖本次 RAG 最低综合分数。' },
-                    messages: {
-                        type: 'array',
-                        description: '对话消息列表',
-                        items: {
-                            type: 'object',
-                            required: ['role', 'content'],
-                            properties: {
-                                role: { type: 'string', description: '消息角色，例如 user、assistant、system' },
-                                content: { type: 'string', description: '消息内容' },
-                            },
-                        },
-                    },
-                },
-            },
+            body: chatRequestBodySchema(),
             response: {
                 400: { $ref: 'ErrorResponse#' },
                 502: { $ref: 'ErrorResponse#' },
@@ -53,36 +75,21 @@ export async function chatRoutes(app: FastifyInstance) {
         },
     }, async (request, reply) => {
         const body = request.body as ChatRequestBody
-
-        if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
+        const validation = validateChatBody(body)
+        if (validation) {
             reply.status(400)
-            return reply.send({ error: 'messages cannot be empty' })
-        }
-
-        const lastMessage = body.messages[body.messages.length - 1]
-        if (!lastMessage?.content || typeof lastMessage.content !== 'string') {
-            reply.status(400)
-            return reply.send({ error: 'last message content cannot be empty' })
+            return reply.send({ error: validation })
         }
 
         try {
             const messages = [...body.messages]
+            const context = await buildRagContext(body)
 
-            if (body.rag !== false) {
-                const embeddings = await getEmbeddings([lastMessage.content])
-                const relevant = await search(embeddings[0], {
-                    topK: parseBoundedNumber(body.topK, config.ragTopK, 1, 20),
-                    minScore: parseBoundedNumber(body.minScore, config.ragMinScore, 0, 1),
-                    fileId: body.fileId,
-                    query: lastMessage.content,
+            if (context.prompt) {
+                messages.unshift({
+                    role: 'system',
+                    content: context.prompt,
                 })
-
-                if (relevant.length > 0) {
-                    messages.unshift({
-                        role: 'system',
-                        content: buildRagSystemPrompt(relevant),
-                    })
-                }
             }
 
             const response = await fetch(`${config.ollamaUrl}/api/chat`, {
@@ -140,9 +147,87 @@ export async function chatRoutes(app: FastifyInstance) {
     })
 }
 
+function chatRequestBodySchema() {
+    return {
+        type: 'object',
+        required: ['messages'],
+        properties: {
+            model: { type: 'string', default: config.defaultModel, description: '可选，Ollama 对话模型名称' },
+            rag: { type: 'boolean', default: true, description: '是否启用 RAG 检索。设为 false 时只调用模型，不注入知识库上下文。' },
+            fileId: { type: 'string', description: '可选，限定只检索某个已上传文件。' },
+            topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK, description: '可选，覆盖本次 RAG 返回数量。' },
+            minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore, description: '可选，覆盖本次 RAG 最低综合分数。' },
+            messages: {
+                type: 'array',
+                description: '对话消息列表',
+                items: {
+                    type: 'object',
+                    required: ['role', 'content'],
+                    properties: {
+                        role: { type: 'string', description: '消息角色，例如 user、assistant、system' },
+                        content: { type: 'string', description: '消息内容' },
+                    },
+                },
+            },
+        },
+    }
+}
+
+function validateChatBody(body: ChatRequestBody): string | null {
+    if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
+        return 'messages cannot be empty'
+    }
+
+    const lastMessage = body.messages[body.messages.length - 1]
+    if (!lastMessage?.content || typeof lastMessage.content !== 'string') {
+        return 'last message content cannot be empty'
+    }
+
+    return null
+}
+
+async function buildRagContext(body: ChatRequestBody): Promise<{
+    enabled: boolean
+    prompt: string
+    results: SearchResult[]
+}> {
+    if (body.rag === false) {
+        return { enabled: false, prompt: '', results: [] }
+    }
+
+    const lastMessage = body.messages[body.messages.length - 1]
+    const embeddings = await getEmbeddings([lastMessage.content])
+    const results = await search(embeddings[0], {
+        topK: parseBoundedNumber(body.topK, config.ragTopK, 1, 20),
+        minScore: parseBoundedNumber(body.minScore, config.ragMinScore, 0, 1),
+        fileId: body.fileId,
+        query: lastMessage.content,
+    })
+
+    return {
+        enabled: true,
+        prompt: results.length > 0 ? buildRagSystemPrompt(results) : '',
+        results,
+    }
+}
+
 function parseBoundedNumber(value: number | undefined, fallback: number, min: number, max: number): number {
     if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
     return Math.min(max, Math.max(min, value))
+}
+
+function toSearchResultResponse(result: SearchResult) {
+    return {
+        id: result.id,
+        fileId: result.fileId,
+        filename: result.filename,
+        chunkIndex: result.chunkIndex,
+        score: result.score,
+        vectorScore: result.vectorScore,
+        keywordScore: result.keywordScore,
+        text: result.text,
+        pageNumber: result.pageNumber,
+    }
 }
 
 function buildRagSystemPrompt(chunks: SearchResult[]): string {
