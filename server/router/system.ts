@@ -4,12 +4,13 @@ export async function systemRoutes(app: FastifyInstance) {
     app.get('/api/health', {
         schema: {
             tags: ['System'],
-            summary: 'Health check',
+            summary: '健康检查',
             response: {
                 200: {
+                    description: '服务运行正常',
                     type: 'object',
                     properties: {
-                        status: { type: 'string', example: 'ok' },
+                        status: { type: 'string', description: '服务状态', example: 'ok' },
                     },
                 },
             },

@@ -12,10 +12,12 @@ export async function uploadRoutes(app: FastifyInstance) {
     app.post('/api/upload', {
         schema: {
             tags: ['Knowledge'],
-            summary: 'Upload a txt or pdf knowledge file',
+            summary: '上传知识库文件',
+            description: '上传 txt 或 pdf 文件，解析文本后切块、生成 embedding，并写入本地向量存储。',
             consumes: ['multipart/form-data'],
             response: {
                 200: {
+                    description: '上传成功',
                     type: 'object',
                     properties: {
                         file: { $ref: 'StoredFile#' },
@@ -24,8 +26,8 @@ export async function uploadRoutes(app: FastifyInstance) {
                             items: {
                                 type: 'object',
                                 properties: {
-                                    text: { type: 'string' },
-                                    chunkIndex: { type: 'number' },
+                                    text: { type: 'string', description: '切块文本' },
+                                    chunkIndex: { type: 'number', description: '切块序号' },
                                 },
                             },
                         },
@@ -95,9 +97,10 @@ export async function uploadRoutes(app: FastifyInstance) {
     app.get('/api/files', {
         schema: {
             tags: ['Knowledge'],
-            summary: 'List uploaded files',
+            summary: '查询已上传文件列表',
             response: {
                 200: {
+                    description: '文件列表',
                     type: 'object',
                     properties: {
                         files: {
@@ -115,16 +118,18 @@ export async function uploadRoutes(app: FastifyInstance) {
     app.get('/api/files/:id', {
         schema: {
             tags: ['Knowledge'],
-            summary: 'Get file detail and chunks',
+            summary: '查询文件详情',
+            description: '查询文件元数据和 chunk 信息。响应不会返回原始 embedding 数组，只返回 embeddingSize。',
             params: {
                 type: 'object',
                 required: ['id'],
                 properties: {
-                    id: { type: 'string' },
+                    id: { type: 'string', description: '文件 ID' },
                 },
             },
             response: {
                 200: {
+                    description: '文件详情',
                     type: 'object',
                     properties: {
                         file: { $ref: 'FileDetail#' },
@@ -148,19 +153,21 @@ export async function uploadRoutes(app: FastifyInstance) {
     app.delete('/api/files/:id', {
         schema: {
             tags: ['Knowledge'],
-            summary: 'Delete file and its chunks',
+            summary: '删除文件',
+            description: '删除指定文件以及它对应的所有 chunk。',
             params: {
                 type: 'object',
                 required: ['id'],
                 properties: {
-                    id: { type: 'string' },
+                    id: { type: 'string', description: '文件 ID' },
                 },
             },
             response: {
                 200: {
+                    description: '删除成功',
                     type: 'object',
                     properties: {
-                        ok: { type: 'boolean' },
+                        ok: { type: 'boolean', description: '是否删除成功' },
                     },
                 },
                 404: { $ref: 'ErrorResponse#' },
@@ -181,24 +188,26 @@ export async function uploadRoutes(app: FastifyInstance) {
     app.get('/api/search', {
         schema: {
             tags: ['RAG'],
-            summary: 'Debug RAG retrieval',
+            summary: '调试 RAG 检索',
+            description: '对查询文本生成 embedding，并使用向量分数和关键词分数做混合检索。',
             querystring: {
                 type: 'object',
                 required: ['q'],
                 properties: {
-                    q: { type: 'string' },
-                    topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK },
-                    minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore },
-                    fileId: { type: 'string' },
+                    q: { type: 'string', description: '检索问题或关键词' },
+                    topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK, description: '返回结果数量，范围 1-20' },
+                    minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore, description: '最低综合分数，范围 0-1' },
+                    fileId: { type: 'string', description: '可选，限定只检索某个文件' },
                 },
             },
             response: {
                 200: {
+                    description: '检索结果',
                     type: 'object',
                     properties: {
-                        query: { type: 'string' },
-                        topK: { type: 'number' },
-                        minScore: { type: 'number' },
+                        query: { type: 'string', description: '检索问题' },
+                        topK: { type: 'number', description: '实际使用的返回数量' },
+                        minScore: { type: 'number', description: '实际使用的最低分数' },
                         results: {
                             type: 'array',
                             items: { $ref: 'SearchResult#' },

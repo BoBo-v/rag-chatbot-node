@@ -8,20 +8,22 @@ export async function chatRoutes(app: FastifyInstance) {
     app.post('/api/chat', {
         schema: {
             tags: ['Chat'],
-            summary: 'Chat with Ollama using RAG context',
+            summary: 'RAG 对话',
+            description: '根据最后一条用户消息检索相关知识库片段，注入 system 上下文后调用 Ollama chat 接口。',
             body: {
                 type: 'object',
                 required: ['messages'],
                 properties: {
-                    model: { type: 'string', default: config.defaultModel },
+                    model: { type: 'string', default: config.defaultModel, description: '可选，Ollama 对话模型名称' },
                     messages: {
                         type: 'array',
+                        description: '对话消息列表',
                         items: {
                             type: 'object',
                             required: ['role', 'content'],
                             properties: {
-                                role: { type: 'string' },
-                                content: { type: 'string' },
+                                role: { type: 'string', description: '消息角色，例如 user、assistant、system' },
+                                content: { type: 'string', description: '消息内容' },
                             },
                         },
                     },
@@ -91,7 +93,8 @@ export async function chatRoutes(app: FastifyInstance) {
     app.get('/api/tags', {
         schema: {
             tags: ['Ollama'],
-            summary: 'List Ollama models',
+            summary: '查询 Ollama 模型列表',
+            description: '代理调用 Ollama 的 /api/tags 接口，返回本地可用模型。',
             response: {
                 502: { $ref: 'ErrorResponse#' },
             },

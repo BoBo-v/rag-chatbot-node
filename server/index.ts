@@ -17,22 +17,22 @@ app.register(cors, { origin: true })
 app.register(swagger, {
     openapi: {
         info: {
-            title: 'Node Fastify RAG API',
-            description: 'Fastify API for file upload, local RAG retrieval, and Ollama chat.',
+            title: 'Node Fastify RAG 接口文档',
+            description: '用于文件上传、本地 RAG 检索和 Ollama 对话代理的 Fastify 接口。',
             version: '1.0.0',
         },
         servers: [
             {
                 url: `http://127.0.0.1:${config.port}`,
-                description: 'Local server',
+                description: '本地服务',
             },
         ],
         tags: [
-            { name: 'System', description: 'Health and service metadata' },
-            { name: 'Knowledge', description: 'Knowledge file upload and management' },
-            { name: 'RAG', description: 'Retrieval debugging' },
-            { name: 'Chat', description: 'Ollama chat proxy with RAG context' },
-            { name: 'Ollama', description: 'Ollama model metadata' },
+            { name: 'System', description: '系统健康检查和服务状态' },
+            { name: 'Knowledge', description: '知识库文件上传、查看和删除' },
+            { name: 'RAG', description: 'RAG 检索调试接口' },
+            { name: 'Chat', description: '带 RAG 上下文的 Ollama 对话接口' },
+            { name: 'Ollama', description: 'Ollama 模型信息接口' },
         ],
     },
 })
