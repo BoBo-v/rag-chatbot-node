@@ -13,7 +13,7 @@ export async function uploadRoutes(app: FastifyInstance) {
         schema: {
             tags: ['Knowledge'],
             summary: '上传知识库文件',
-            description: '上传 txt 或 pdf 文件，解析文本后切块、生成 embedding，并写入本地向量存储。',
+            description: '上传 txt、md 或 pdf 文件，解析文本后切块、生成 embedding，并写入本地向量存储。',
             consumes: ['multipart/form-data'],
             response: {
                 200: {
@@ -49,14 +49,14 @@ export async function uploadRoutes(app: FastifyInstance) {
             const ext = file.filename.split('.').pop()?.toLowerCase()
             let text = ''
 
-            if (ext === 'txt') {
+            if (ext === 'txt' || ext === 'md') {
                 text = buffer.toString('utf-8')
             } else if (ext === 'pdf') {
                 const data = await pdfParse(buffer)
                 text = data.text
             } else {
                 reply.status(400)
-                return reply.send({ error: 'Unsupported file type. Only txt and pdf are supported.' })
+                return reply.send({ error: 'Unsupported file type. Only txt, md and pdf are supported.' })
             }
 
             const chunks = splitTextToChunks(text, config.chunkMaxLen, config.chunkOverlap)
