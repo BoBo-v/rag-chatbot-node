@@ -9,7 +9,33 @@ const require = createRequire(import.meta.url)
 const pdfParse = require('pdf-parse')
 
 export async function uploadRoutes(app: FastifyInstance) {
-    app.post('/api/upload', async (request, reply) => {
+    app.post('/api/upload', {
+        schema: {
+            tags: ['Knowledge'],
+            summary: 'Upload a txt or pdf knowledge file',
+            consumes: ['multipart/form-data'],
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        file: { $ref: 'StoredFile#' },
+                        chunks: {
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    text: { type: 'string' },
+                                    chunkIndex: { type: 'number' },
+                                },
+                            },
+                        },
+                    },
+                },
+                400: { $ref: 'ErrorResponse#' },
+                502: { $ref: 'ErrorResponse#' },
+            },
+        },
+    }, async (request, reply) => {
         try {
             const file = await request.file()
             if (!file) {
@@ -66,11 +92,48 @@ export async function uploadRoutes(app: FastifyInstance) {
         }
     })
 
-    app.get('/api/files', async () => {
+    app.get('/api/files', {
+        schema: {
+            tags: ['Knowledge'],
+            summary: 'List uploaded files',
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        files: {
+                            type: 'array',
+                            items: { $ref: 'StoredFile#' },
+                        },
+                    },
+                },
+            },
+        },
+    }, async () => {
         return { files: await listFiles() }
     })
 
-    app.get('/api/files/:id', async (request, reply) => {
+    app.get('/api/files/:id', {
+        schema: {
+            tags: ['Knowledge'],
+            summary: 'Get file detail and chunks',
+            params: {
+                type: 'object',
+                required: ['id'],
+                properties: {
+                    id: { type: 'string' },
+                },
+            },
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        file: { $ref: 'FileDetail#' },
+                    },
+                },
+                404: { $ref: 'ErrorResponse#' },
+            },
+        },
+    }, async (request, reply) => {
         const params = request.params as { id: string }
         const file = await getFileDetail(params.id)
 
@@ -82,7 +145,28 @@ export async function uploadRoutes(app: FastifyInstance) {
         return { file }
     })
 
-    app.delete('/api/files/:id', async (request, reply) => {
+    app.delete('/api/files/:id', {
+        schema: {
+            tags: ['Knowledge'],
+            summary: 'Delete file and its chunks',
+            params: {
+                type: 'object',
+                required: ['id'],
+                properties: {
+                    id: { type: 'string' },
+                },
+            },
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        ok: { type: 'boolean' },
+                    },
+                },
+                404: { $ref: 'ErrorResponse#' },
+            },
+        },
+    }, async (request, reply) => {
         const params = request.params as { id: string }
         const deleted = await deleteFile(params.id)
 
@@ -94,7 +178,37 @@ export async function uploadRoutes(app: FastifyInstance) {
         return { ok: true }
     })
 
-    app.get('/api/search', async (request, reply) => {
+    app.get('/api/search', {
+        schema: {
+            tags: ['RAG'],
+            summary: 'Debug RAG retrieval',
+            querystring: {
+                type: 'object',
+                required: ['q'],
+                properties: {
+                    q: { type: 'string' },
+                    topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK },
+                    minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore },
+                    fileId: { type: 'string' },
+                },
+            },
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        query: { type: 'string' },
+                        topK: { type: 'number' },
+                        minScore: { type: 'number' },
+                        results: {
+                            type: 'array',
+                            items: { $ref: 'SearchResult#' },
+                        },
+                    },
+                },
+                400: { $ref: 'ErrorResponse#' },
+            },
+        },
+    }, async (request, reply) => {
         const query = request.query as {
             q?: string
             topK?: string

@@ -5,7 +5,34 @@ import { getAllDefinitions } from '../utils/tools'
 import { config } from '../utils/config'
 
 export async function chatRoutes(app: FastifyInstance) {
-    app.post('/api/chat', async (request, reply) => {
+    app.post('/api/chat', {
+        schema: {
+            tags: ['Chat'],
+            summary: 'Chat with Ollama using RAG context',
+            body: {
+                type: 'object',
+                required: ['messages'],
+                properties: {
+                    model: { type: 'string', default: config.defaultModel },
+                    messages: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            required: ['role', 'content'],
+                            properties: {
+                                role: { type: 'string' },
+                                content: { type: 'string' },
+                            },
+                        },
+                    },
+                },
+            },
+            response: {
+                400: { $ref: 'ErrorResponse#' },
+                502: { $ref: 'ErrorResponse#' },
+            },
+        },
+    }, async (request, reply) => {
         const body = request.body as { messages: Array<{ role: string; content: string }>; model?: string }
 
         if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
@@ -61,7 +88,15 @@ export async function chatRoutes(app: FastifyInstance) {
         }
     })
 
-    app.get('/api/tags', async (request, reply) => {
+    app.get('/api/tags', {
+        schema: {
+            tags: ['Ollama'],
+            summary: 'List Ollama models',
+            response: {
+                502: { $ref: 'ErrorResponse#' },
+            },
+        },
+    }, async (request, reply) => {
         try {
             const response = await fetch(`${config.ollamaUrl}/api/tags`, {
                 method: 'GET',
