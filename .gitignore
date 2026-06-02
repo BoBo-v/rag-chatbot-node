@@ -37,3 +37,6 @@ coverage/
 .cache/
 .eslintcache
 .stylelintcache
+
+# Local RAG persistence
+server/data/

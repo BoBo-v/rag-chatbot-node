@@ -1,53 +1,66 @@
 import type { FastifyInstance } from 'fastify'
+import { createRequire } from 'node:module'
 import { splitTextToChunks } from '../utils/chunker'
-import { createRequire } from 'module'
 import { getEmbeddings } from '../utils/embedding'
-import {addChunks} from "../utils/vectorStore";
+import { addFileWithChunks, listFiles } from '../utils/vectorStore'
+import { config } from '../utils/config'
 
 const require = createRequire(import.meta.url)
 const pdfParse = require('pdf-parse')
+
 export async function uploadRoutes(app: FastifyInstance) {
     app.post('/api/upload', async (request, reply) => {
         const file = await request.file()
         if (!file) {
             reply.status(400)
-            return reply.send({ error: '请上传文件' })
+            return reply.send({ error: 'Please upload a file' })
         }
 
         const buffer = await file.toBuffer()
         const ext = file.filename.split('.').pop()?.toLowerCase()
-
         let text = ''
 
-        if(ext === 'txt'){
+        if (ext === 'txt') {
             text = buffer.toString('utf-8')
-        }else if(ext === 'pdf'){
+        } else if (ext === 'pdf') {
             const data = await pdfParse(buffer)
             text = data.text
-        }else{
+        } else {
             reply.status(400)
-            return reply.send({ error: '不支持的文件格式' })
+            return reply.send({ error: 'Unsupported file type. Only txt and pdf are supported.' })
         }
 
-        const chunks = splitTextToChunks(text)
-        const texts = chunks.map(c => c.text)
-        const embeddings = await getEmbeddings(texts)
+        const chunks = splitTextToChunks(text, config.chunkMaxLen, config.chunkOverlap)
+        if (chunks.length === 0) {
+            reply.status(400)
+            return reply.send({ error: 'No readable text found in this file' })
+        }
 
-        const result = chunks.map((chunk, i) => ({
-            ...chunk,
-            embedding: embeddings[i],
-        }))
-        addChunks(result.map(chunk => ({
+        const embeddings = await getEmbeddings(chunks.map(c => c.text))
+        const chunkInputs = chunks.map((chunk, i) => ({
             text: chunk.text,
-            embedding: chunk.embedding,
+            embedding: embeddings[i],
+            chunkIndex: chunk.index,
+        }))
+
+        const storedFile = await addFileWithChunks({
             filename: file.filename,
-        })))
+            mimeType: file.mimetype,
+            size: buffer.length,
+            charCount: text.length,
+            chunks: chunkInputs,
+        })
 
         return reply.send({
-            filename: file.filename,
-            charCount: text.length,
-            chunkCount: chunks.length,
-            chunks: result,
+            file: storedFile,
+            chunks: chunkInputs.map(chunk => ({
+                text: chunk.text,
+                chunkIndex: chunk.chunkIndex,
+            })),
         })
+    })
+
+    app.get('/api/files', async () => {
+        return { files: await listFiles() }
     })
 }
