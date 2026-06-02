@@ -4,7 +4,8 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev:server": "tsx watch server/index.ts"
+    "dev:server": "tsx watch server/index.ts",
+    "verify": "tsx server/scripts/verify.ts"
   },
   "author": "",
   "license": "ISC",

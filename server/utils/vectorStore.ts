@@ -55,38 +55,40 @@ interface AddFileInput {
 const storePath = path.resolve(process.cwd(), config.vectorStorePath)
 const store: VectorStoreData = { files: [], chunks: [] }
 let loaded = false
-let writeQueue = Promise.resolve()
+let mutationQueue = Promise.resolve()
 
 export async function addFileWithChunks(input: AddFileInput): Promise<StoredFile> {
-    await loadStore()
+    return enqueueMutation(async () => {
+        await loadStore()
 
-    const now = new Date().toISOString()
-    const file: StoredFile = {
-        id: randomUUID(),
-        filename: input.filename,
-        mimeType: input.mimeType,
-        size: input.size,
-        charCount: input.charCount,
-        chunkCount: input.chunks.length,
-        createdAt: now,
-    }
+        const now = new Date().toISOString()
+        const file: StoredFile = {
+            id: randomUUID(),
+            filename: input.filename,
+            mimeType: input.mimeType,
+            size: input.size,
+            charCount: input.charCount,
+            chunkCount: input.chunks.length,
+            createdAt: now,
+        }
 
-    const chunks: StoredChunk[] = input.chunks.map(chunk => ({
-        id: randomUUID(),
-        fileId: file.id,
-        filename: file.filename,
-        chunkIndex: chunk.chunkIndex,
-        text: chunk.text,
-        embedding: chunk.embedding,
-        createdAt: now,
-        pageNumber: chunk.pageNumber,
-    }))
+        const chunks: StoredChunk[] = input.chunks.map(chunk => ({
+            id: randomUUID(),
+            fileId: file.id,
+            filename: file.filename,
+            chunkIndex: chunk.chunkIndex,
+            text: chunk.text,
+            embedding: chunk.embedding,
+            createdAt: now,
+            pageNumber: chunk.pageNumber,
+        }))
 
-    store.files.push(file)
-    store.chunks.push(...chunks)
-    await enqueueSave()
+        store.files.push(file)
+        store.chunks.push(...chunks)
+        await saveStore()
 
-    return file
+        return file
+    })
 }
 
 export async function search(
@@ -146,16 +148,18 @@ export async function getFileDetail(fileId: string): Promise<FileDetail | null> 
 }
 
 export async function deleteFile(fileId: string): Promise<boolean> {
-    await loadStore()
+    return enqueueMutation(async () => {
+        await loadStore()
 
-    const fileIndex = store.files.findIndex(item => item.id === fileId)
-    if (fileIndex === -1) return false
+        const fileIndex = store.files.findIndex(item => item.id === fileId)
+        if (fileIndex === -1) return false
 
-    store.files.splice(fileIndex, 1)
-    store.chunks = store.chunks.filter(chunk => chunk.fileId !== fileId)
-    await enqueueSave()
+        store.files.splice(fileIndex, 1)
+        store.chunks = store.chunks.filter(chunk => chunk.fileId !== fileId)
+        await saveStore()
 
-    return true
+        return true
+    })
 }
 
 async function loadStore(): Promise<void> {
@@ -179,9 +183,10 @@ async function saveStore(): Promise<void> {
     await writeFile(storePath, JSON.stringify(store, null, 2), 'utf-8')
 }
 
-async function enqueueSave(): Promise<void> {
-    writeQueue = writeQueue.then(saveStore, saveStore)
-    return writeQueue
+function enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const next = mutationQueue.then(operation, operation)
+    mutationQueue = next.then(() => undefined, () => undefined)
+    return next
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
