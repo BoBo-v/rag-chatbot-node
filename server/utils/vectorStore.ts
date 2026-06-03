@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { config } from './config'
 
 export interface StoredFile {
@@ -34,11 +35,6 @@ export interface FileDetail extends StoredFile {
     chunks: Array<Omit<StoredChunk, 'embedding'> & { embeddingSize: number }>
 }
 
-interface VectorStoreData {
-    files: StoredFile[]
-    chunks: StoredChunk[]
-}
-
 interface AddFileInput {
     filename: string
     mimeType: string
@@ -52,15 +48,56 @@ interface AddFileInput {
     }>
 }
 
-const storePath = path.resolve(process.cwd(), config.vectorStorePath)
-const store: VectorStoreData = { files: [], chunks: [] }
-let loaded = false
+interface ChunkRow {
+    id: string
+    file_id: string
+    filename: string
+    chunk_index: number
+    text: string
+    embedding: string
+    created_at: string
+    page_number: number | null
+}
+
+interface FileRow {
+    id: string
+    filename: string
+    mime_type: string
+    size: number
+    char_count: number
+    chunk_count: number
+    created_at: string
+}
+
+interface LegacyVectorStoreData {
+    files?: Array<{
+        id?: string
+        filename?: string
+        mimeType?: string
+        size?: number
+        charCount?: number
+        chunkCount?: number
+        createdAt?: string
+    }>
+    chunks?: Array<{
+        id?: string
+        fileId?: string
+        filename?: string
+        chunkIndex?: number
+        text?: string
+        embedding?: number[]
+        createdAt?: string
+        pageNumber?: number
+    }>
+}
+
+const dbPath = path.resolve(process.cwd(), config.vectorStorePath)
+let db: DatabaseSync | null = null
 let mutationQueue = Promise.resolve()
 
 export async function addFileWithChunks(input: AddFileInput): Promise<StoredFile> {
     return enqueueMutation(async () => {
-        await loadStore()
-
+        const database = getDb()
         const now = new Date().toISOString()
         const file: StoredFile = {
             id: randomUUID(),
@@ -72,22 +109,37 @@ export async function addFileWithChunks(input: AddFileInput): Promise<StoredFile
             createdAt: now,
         }
 
-        const chunks: StoredChunk[] = input.chunks.map(chunk => ({
-            id: randomUUID(),
-            fileId: file.id,
-            filename: file.filename,
-            chunkIndex: chunk.chunkIndex,
-            text: chunk.text,
-            embedding: chunk.embedding,
-            createdAt: now,
-            pageNumber: chunk.pageNumber,
-        }))
+        database.exec('BEGIN')
+        try {
+            database.prepare(`
+                INSERT INTO files (id, filename, mime_type, size, char_count, chunk_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(file.id, file.filename, file.mimeType, file.size, file.charCount, file.chunkCount, file.createdAt)
 
-        store.files.push(file)
-        store.chunks.push(...chunks)
-        await saveStore()
+            const insertChunk = database.prepare(`
+                INSERT INTO chunks (id, file_id, filename, chunk_index, text, embedding, created_at, page_number)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `)
 
-        return file
+            for (const chunk of input.chunks) {
+                insertChunk.run(
+                    randomUUID(),
+                    file.id,
+                    file.filename,
+                    chunk.chunkIndex,
+                    chunk.text,
+                    JSON.stringify(chunk.embedding),
+                    now,
+                    chunk.pageNumber ?? null
+                )
+            }
+
+            database.exec('COMMIT')
+            return file
+        } catch (err) {
+            database.exec('ROLLBACK')
+            throw err
+        }
     })
 }
 
@@ -95,15 +147,12 @@ export async function search(
     queryEmbedding: number[],
     options: { topK?: number; minScore?: number; fileId?: string; query?: string } = {}
 ): Promise<SearchResult[]> {
-    await loadStore()
-
     const topK = options.topK ?? config.ragTopK
     const minScore = options.minScore ?? config.ragMinScore
     const queryTokens = tokenize(options.query ?? '')
-    const chunks = options.fileId
-        ? store.chunks.filter(chunk => chunk.fileId === options.fileId)
-        : store.chunks
-    const scored = chunks.map(chunk => {
+    const rows = selectChunkRows(options.fileId)
+    const scored = rows.map(row => {
+        const chunk = rowToChunk(row)
         const vectorScore = cosineSimilarity(queryEmbedding, chunk.embedding)
         const keywordScore = keywordSimilarity(queryTokens, chunk.text)
         const score = combineScores(vectorScore, keywordScore)
@@ -123,20 +172,28 @@ export async function search(
 }
 
 export async function listFiles(): Promise<StoredFile[]> {
-    await loadStore()
-    return [...store.files]
+    const rows = getDb().prepare(`
+        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at
+        FROM files
+        ORDER BY created_at DESC
+    `).all() as FileRow[]
+
+    return rows.map(rowToFile)
 }
 
 export async function getFileDetail(fileId: string): Promise<FileDetail | null> {
-    await loadStore()
+    const fileRow = getDb().prepare(`
+        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at
+        FROM files
+        WHERE id = ?
+    `).get(fileId) as FileRow | undefined
 
-    const file = store.files.find(item => item.id === fileId)
-    if (!file) return null
+    if (!fileRow) return null
 
-    const chunks = store.chunks
-        .filter(chunk => chunk.fileId === fileId)
-        .sort((a, b) => a.chunkIndex - b.chunkIndex)
-        .map(chunk => {
+    const chunks = selectChunkRows(fileId)
+        .sort((a, b) => a.chunk_index - b.chunk_index)
+        .map(row => {
+            const chunk = rowToChunk(row)
             const { embedding, ...rest } = chunk
             return {
                 ...rest,
@@ -144,43 +201,180 @@ export async function getFileDetail(fileId: string): Promise<FileDetail | null> 
             }
         })
 
-    return { ...file, chunks }
+    return { ...rowToFile(fileRow), chunks }
 }
 
 export async function deleteFile(fileId: string): Promise<boolean> {
     return enqueueMutation(async () => {
-        await loadStore()
+        const database = getDb()
+        const existing = database.prepare('SELECT id FROM files WHERE id = ?').get(fileId)
+        if (!existing) return false
 
-        const fileIndex = store.files.findIndex(item => item.id === fileId)
-        if (fileIndex === -1) return false
-
-        store.files.splice(fileIndex, 1)
-        store.chunks = store.chunks.filter(chunk => chunk.fileId !== fileId)
-        await saveStore()
-
-        return true
+        database.exec('BEGIN')
+        try {
+            database.prepare('DELETE FROM files WHERE id = ?').run(fileId)
+            database.exec('COMMIT')
+            return true
+        } catch (err) {
+            database.exec('ROLLBACK')
+            throw err
+        }
     })
 }
 
-async function loadStore(): Promise<void> {
-    if (loaded) return
+function getDb(): DatabaseSync {
+    if (db) return db
 
-    try {
-        const raw = await readFile(storePath, 'utf-8')
-        const data = JSON.parse(raw) as Partial<VectorStoreData>
-        store.files = Array.isArray(data.files) ? data.files : []
-        store.chunks = Array.isArray(data.chunks) ? data.chunks : []
-    } catch (err) {
-        const code = (err as { code?: string }).code
-        if (code !== 'ENOENT') throw err
+    mkdirSync(path.dirname(dbPath), { recursive: true })
+    const firstOpen = !existsSync(dbPath)
+    db = new DatabaseSync(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    db.exec('PRAGMA journal_mode = WAL')
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS files (
+            id TEXT PRIMARY KEY,
+            filename TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            char_count INTEGER NOT NULL,
+            chunk_count INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS chunks (
+            id TEXT PRIMARY KEY,
+            file_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            embedding TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            page_number INTEGER,
+            FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_chunks_file_id ON chunks(file_id);
+    `)
+
+    if (firstOpen) {
+        db.exec('PRAGMA user_version = 1')
     }
 
-    loaded = true
+    migrateLegacyJsonStore(db)
+
+    return db
 }
 
-async function saveStore(): Promise<void> {
-    await mkdir(path.dirname(storePath), { recursive: true })
-    await writeFile(storePath, JSON.stringify(store, null, 2), 'utf-8')
+function migrateLegacyJsonStore(database: DatabaseSync): void {
+    const countRow = database.prepare('SELECT COUNT(*) AS count FROM files').get() as { count: number }
+    if (countRow.count > 0) return
+
+    const legacyPath = legacyJsonPath()
+    if (!existsSync(legacyPath)) return
+
+    const data = JSON.parse(readFileSync(legacyPath, 'utf-8')) as LegacyVectorStoreData
+    const files = Array.isArray(data.files) ? data.files : []
+    const chunks = Array.isArray(data.chunks) ? data.chunks : []
+    if (files.length === 0 && chunks.length === 0) return
+
+    database.exec('BEGIN')
+    try {
+        const insertFile = database.prepare(`
+            INSERT OR IGNORE INTO files (id, filename, mime_type, size, char_count, chunk_count, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `)
+        const insertChunk = database.prepare(`
+            INSERT OR IGNORE INTO chunks (id, file_id, filename, chunk_index, text, embedding, created_at, page_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+
+        for (const file of files) {
+            if (!file.id || !file.filename) continue
+            insertFile.run(
+                file.id,
+                file.filename,
+                file.mimeType ?? 'application/octet-stream',
+                file.size ?? 0,
+                file.charCount ?? 0,
+                file.chunkCount ?? chunks.filter(chunk => chunk.fileId === file.id).length,
+                file.createdAt ?? new Date().toISOString()
+            )
+        }
+
+        const migratedFileIds = new Set(
+            (database.prepare('SELECT id FROM files').all() as Array<{ id: string }>).map(file => file.id)
+        )
+
+        for (const chunk of chunks) {
+            if (!chunk.fileId || !chunk.text || !Array.isArray(chunk.embedding)) continue
+            if (!migratedFileIds.has(chunk.fileId)) continue
+            insertChunk.run(
+                chunk.id ?? randomUUID(),
+                chunk.fileId,
+                chunk.filename ?? '',
+                chunk.chunkIndex ?? 0,
+                chunk.text,
+                JSON.stringify(chunk.embedding),
+                chunk.createdAt ?? new Date().toISOString(),
+                chunk.pageNumber ?? null
+            )
+        }
+
+        database.exec('COMMIT')
+    } catch (err) {
+        database.exec('ROLLBACK')
+        throw err
+    }
+}
+
+function legacyJsonPath(): string {
+    if (dbPath.endsWith('.sqlite')) {
+        return dbPath.replace(/\.sqlite$/, '.json')
+    }
+
+    return `${dbPath}.json`
+}
+
+function selectChunkRows(fileId?: string): ChunkRow[] {
+    if (fileId) {
+        return getDb().prepare(`
+            SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number
+            FROM chunks
+            WHERE file_id = ?
+            ORDER BY chunk_index ASC
+        `).all(fileId) as ChunkRow[]
+    }
+
+    return getDb().prepare(`
+        SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number
+        FROM chunks
+        ORDER BY created_at DESC, chunk_index ASC
+    `).all() as ChunkRow[]
+}
+
+function rowToFile(row: FileRow): StoredFile {
+    return {
+        id: row.id,
+        filename: row.filename,
+        mimeType: row.mime_type,
+        size: row.size,
+        charCount: row.char_count,
+        chunkCount: row.chunk_count,
+        createdAt: row.created_at,
+    }
+}
+
+function rowToChunk(row: ChunkRow): StoredChunk {
+    return {
+        id: row.id,
+        fileId: row.file_id,
+        filename: row.filename,
+        chunkIndex: row.chunk_index,
+        text: row.text,
+        embedding: JSON.parse(row.embedding) as number[],
+        createdAt: row.created_at,
+        pageNumber: row.page_number ?? undefined,
+    }
 }
 
 function enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {

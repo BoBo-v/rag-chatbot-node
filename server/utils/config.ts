@@ -19,5 +19,5 @@ export const config = {
     ragKeywordWeight: numberFromEnv('RAG_KEYWORD_WEIGHT', 0.2),
     chunkMaxLen: numberFromEnv('CHUNK_MAX_LEN', 700),
     chunkOverlap: numberFromEnv('CHUNK_OVERLAP', 100),
-    vectorStorePath: process.env.VECTOR_STORE_PATH || 'server/data/vector-store.json',
+    vectorStorePath: process.env.VECTOR_STORE_PATH || 'server/data/vector-store.sqlite',
 }

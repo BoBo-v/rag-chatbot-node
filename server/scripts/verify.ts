@@ -1,6 +1,7 @@
 import { addFileWithChunks, deleteFile, getFileDetail, listFiles, search } from '../utils/vectorStore'
 import { splitTextToChunks } from '../utils/chunker'
 import { getEmbeddings } from '../utils/embedding'
+import { existsSync, rmSync, writeFileSync } from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
     if (!condition) throw new Error(message)
@@ -54,14 +55,50 @@ async function verifyVectorStore() {
     }
 }
 
+async function verifyLegacyMigration() {
+    const target = process.env.VECTOR_STORE_PATH
+    if (!target || !target.endsWith('.sqlite')) return
+
+    const legacyPath = target.replace(/\.sqlite$/, '.json')
+    for (const file of [target, `${target}-wal`, `${target}-shm`, legacyPath]) {
+        if (existsSync(file)) rmSync(file, { force: true })
+    }
+
+    writeFileSync(legacyPath, JSON.stringify({
+        files: [{
+            id: 'legacy-file',
+            filename: 'legacy.txt',
+            mimeType: 'text/plain',
+            size: 1,
+            charCount: 12,
+            chunkCount: 1,
+            createdAt: '2026-01-01T00:00:00.000Z',
+        }],
+        chunks: [{
+            id: 'legacy-chunk',
+            fileId: 'legacy-file',
+            filename: 'legacy.txt',
+            chunkIndex: 0,
+            text: 'legacy ticket-9527',
+            embedding: [1, 0],
+            createdAt: '2026-01-01T00:00:00.000Z',
+        }],
+    }), 'utf-8')
+
+    const detail = await getFileDetail('legacy-file')
+    assert(detail?.chunks.length === 1, `legacy migration failed: ${JSON.stringify(detail)}`)
+    await deleteFile('legacy-file')
+}
+
 async function main() {
     await verifyChunker()
     await verifyEmbeddingFastPath()
+    await verifyLegacyMigration()
     await verifyVectorStore()
 
     console.log(JSON.stringify({
         ok: true,
-        checks: ['chunker', 'embedding-empty-input', 'vector-store'],
+        checks: ['chunker', 'embedding-empty-input', 'legacy-migration', 'vector-store'],
     }))
 }
 
