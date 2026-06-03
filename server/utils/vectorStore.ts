@@ -235,6 +235,13 @@ export async function deleteFile(fileId: string): Promise<boolean> {
     })
 }
 
+export function closeVectorStore(): void {
+    if (!db) return
+
+    db.close()
+    db = null
+}
+
 function getDb(): DatabaseSync {
     if (db) return db
 
