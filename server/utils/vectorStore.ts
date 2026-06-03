@@ -101,6 +101,7 @@ interface LegacyVectorStoreData {
 }
 
 const dbPath = path.resolve(process.cwd(), config.vectorStorePath)
+const ftsIndexVersion = 2
 let db: DatabaseSync | null = null
 let mutationQueue = Promise.resolve()
 
@@ -324,8 +325,9 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
         for (const chunk of chunks) {
             if (!chunk.fileId || !chunk.text || !Array.isArray(chunk.embedding)) continue
             if (!migratedFileIds.has(chunk.fileId)) continue
+            const chunkId = chunk.id ?? randomUUID()
             insertChunk.run(
-                chunk.id ?? randomUUID(),
+                chunkId,
                 chunk.fileId,
                 chunk.filename ?? '',
                 chunk.chunkIndex ?? 0,
@@ -334,6 +336,12 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
                 chunk.createdAt ?? new Date().toISOString(),
                 chunk.pageNumber ?? null
             )
+            upsertFtsChunk(database, {
+                id: chunkId,
+                fileId: chunk.fileId,
+                filename: chunk.filename ?? '',
+                text: chunk.text,
+            })
         }
 
         database.exec('COMMIT')
@@ -396,6 +404,12 @@ function insertFileWithChunks(database: DatabaseSync, input: AddFileInput): Stor
             now,
             chunk.pageNumber ?? null
         )
+        upsertFtsChunk(database, {
+            id: chunkId,
+            fileId: file.id,
+            filename: file.filename,
+            text: chunk.text,
+        })
     }
 
     return file
@@ -403,6 +417,8 @@ function insertFileWithChunks(database: DatabaseSync, input: AddFileInput): Stor
 
 function ensureFtsTable(database: DatabaseSync): void {
     database.exec(`
+        DROP TRIGGER IF EXISTS chunks_ai;
+
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
             chunk_id UNINDEXED,
             file_id UNINDEXED,
@@ -410,18 +426,16 @@ function ensureFtsTable(database: DatabaseSync): void {
             text
         );
 
-        CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-            INSERT INTO chunks_fts (chunk_id, file_id, filename, text)
-            VALUES (new.id, new.file_id, new.filename, new.filename || char(10) || new.text);
-        END;
-
         CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
             DELETE FROM chunks_fts WHERE chunk_id = old.id;
         END;
     `)
 
+    const versionRow = database.prepare('PRAGMA user_version').get() as { user_version: number }
     const countRow = database.prepare('SELECT COUNT(*) AS count FROM chunks_fts').get() as { count: number }
-    if (countRow.count > 0) return
+    if (countRow.count > 0 && versionRow.user_version >= ftsIndexVersion) return
+
+    database.prepare('DELETE FROM chunks_fts').run()
 
     const rows = selectAllChunkRows(database)
     for (const row of rows) {
@@ -429,21 +443,22 @@ function ensureFtsTable(database: DatabaseSync): void {
             id: row.id,
             fileId: row.file_id,
             filename: row.filename,
-            chunkIndex: row.chunk_index,
             text: row.text,
         })
     }
+
+    database.exec(`PRAGMA user_version = ${ftsIndexVersion}`)
 }
 
 function upsertFtsChunk(
     database: DatabaseSync,
-    chunk: { id: string; fileId: string; filename: string; chunkIndex: number; text: string }
+    chunk: { id: string; fileId: string; filename: string; text: string }
 ): void {
     database.prepare('DELETE FROM chunks_fts WHERE chunk_id = ?').run(chunk.id)
     database.prepare(`
         INSERT INTO chunks_fts (chunk_id, file_id, filename, text)
         VALUES (?, ?, ?, ?)
-    `).run(chunk.id, chunk.fileId, chunk.filename, `${chunk.filename}\n${chunk.text}`)
+    `).run(chunk.id, chunk.fileId, chunk.filename, buildSearchText(chunk.filename, chunk.text))
 }
 
 function legacyJsonPath(): string {
@@ -528,7 +543,7 @@ function selectAllChunkRows(database: DatabaseSync): ChunkRow[] {
 }
 
 function buildFtsQuery(query?: string): string {
-    const tokens = tokenize(query ?? '')
+    const tokens = tokenizeForSearch(query ?? '')
     return tokens
         .map(token => `"${token.replace(/"/g, '""')}"`)
         .join(' OR ')
@@ -632,6 +647,38 @@ function tokenize(text: string): string[] {
     const normalized = normalizeForKeyword(text)
     const tokens = normalized.match(/[a-z0-9_./:-]+|[\u4e00-\u9fa5]{2,}/g) || []
     return Array.from(new Set(tokens.filter(token => token.length >= 2)))
+}
+
+function tokenizeForSearch(text: string): string[] {
+    const tokens = tokenize(text)
+    const expanded: string[] = []
+
+    for (const token of tokens) {
+        expanded.push(token)
+        if (/^[\u4e00-\u9fa5]+$/.test(token)) {
+            expanded.push(...getNgrams(token, 2), ...getNgrams(token, 3))
+        }
+    }
+
+    return Array.from(new Set(expanded))
+}
+
+function buildSearchText(filename: string, text: string): string {
+    return [
+        filename,
+        text,
+        tokenizeForSearch(`${filename}\n${text}`).join(' '),
+    ].join('\n')
+}
+
+function getNgrams(text: string, size: number): string[] {
+    if (text.length <= size) return [text]
+
+    const result: string[] = []
+    for (let i = 0; i <= text.length - size; i++) {
+        result.push(text.slice(i, i + size))
+    }
+    return result
 }
 
 function normalizeForKeyword(text: string): string {

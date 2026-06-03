@@ -205,6 +205,30 @@ async function verifyFtsAndVectorCandidateMerge() {
     await Promise.all(created.map(file => deleteFile(file.id)))
 }
 
+async function verifyChineseFtsNgrams() {
+    const created = await addFileWithChunks({
+        filename: 'cn-fts.txt',
+        mimeType: 'text/plain',
+        size: 1,
+        charCount: 30,
+        chunks: [{ text: '知识图谱检索可以提升中文召回质量', embedding: [0, 1], chunkIndex: 0 }],
+    })
+
+    const results = await search([0, 1], {
+        query: '图谱',
+        topK: 3,
+        minScore: 0,
+        fileId: created.id,
+    })
+
+    assert(
+        results.length === 1 && results[0].keywordScore > 0,
+        `Chinese FTS ngram search failed: ${JSON.stringify(results)}`
+    )
+
+    await deleteFile(created.id)
+}
+
 async function verifyLegacyMigration() {
     const target = process.env.VECTOR_STORE_PATH
     if (!target || !target.endsWith('.sqlite')) return
@@ -248,6 +272,7 @@ async function main() {
     await verifyContentHashDedupe()
     await verifyHybridSearch()
     await verifyFtsAndVectorCandidateMerge()
+    await verifyChineseFtsNgrams()
 
     console.log(JSON.stringify({
         ok: true,
@@ -259,6 +284,7 @@ async function main() {
             'content-hash-dedupe',
             'hybrid-search',
             'fts-vector-merge',
+            'chinese-fts-ngrams',
         ],
     }))
 }
