@@ -173,6 +173,38 @@ async function verifyHybridSearch() {
     await Promise.all(created.map(file => deleteFile(file.id)))
 }
 
+async function verifyFtsAndVectorCandidateMerge() {
+    const created = await Promise.all([
+        addFileWithChunks({
+            filename: 'merge-keyword.txt',
+            mimeType: 'text/plain',
+            size: 1,
+            charCount: 50,
+            chunks: [{ text: 'merge-token lexical but weak semantic', embedding: [0, 1], chunkIndex: 0 }],
+        }),
+        addFileWithChunks({
+            filename: 'merge-vector.txt',
+            mimeType: 'text/plain',
+            size: 1,
+            charCount: 50,
+            chunks: [{ text: 'semantic answer without lexical token', embedding: [1, 0], chunkIndex: 0 }],
+        }),
+    ])
+
+    const results = await search([1, 0], {
+        query: 'merge-token',
+        topK: 2,
+        minScore: 0,
+    })
+
+    assert(
+        results.some(result => result.fileId === created[1].id),
+        `vector candidate should survive when FTS has hits: ${JSON.stringify(results)}`
+    )
+
+    await Promise.all(created.map(file => deleteFile(file.id)))
+}
+
 async function verifyLegacyMigration() {
     const target = process.env.VECTOR_STORE_PATH
     if (!target || !target.endsWith('.sqlite')) return
@@ -215,6 +247,7 @@ async function main() {
     await verifyVectorStore()
     await verifyContentHashDedupe()
     await verifyHybridSearch()
+    await verifyFtsAndVectorCandidateMerge()
 
     console.log(JSON.stringify({
         ok: true,
@@ -225,6 +258,7 @@ async function main() {
             'vector-store',
             'content-hash-dedupe',
             'hybrid-search',
+            'fts-vector-merge',
         ],
     }))
 }

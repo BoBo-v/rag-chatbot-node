@@ -92,7 +92,7 @@ export async function chatRoutes(app: FastifyInstance) {
                 })
             }
 
-            const response = await fetch(`${config.ollamaUrl}/api/chat`, {
+            const response = await fetchWithTimeout(`${config.ollamaUrl}/api/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -100,7 +100,7 @@ export async function chatRoutes(app: FastifyInstance) {
                     messages,
                     stream: true,
                 }),
-            })
+            }, config.ollamaTimeoutMs)
 
             if (!response.ok) {
                 const errText = await response.text()
@@ -128,9 +128,9 @@ export async function chatRoutes(app: FastifyInstance) {
         },
     }, async (request, reply) => {
         try {
-            const response = await fetch(`${config.ollamaUrl}/api/tags`, {
+            const response = await fetchWithTimeout(`${config.ollamaUrl}/api/tags`, {
                 method: 'GET',
-            })
+            }, config.ollamaTimeoutMs)
 
             if (!response.ok) {
                 const errText = await response.text()
@@ -145,6 +145,16 @@ export async function chatRoutes(app: FastifyInstance) {
             return reply.send({ error: 'Failed to connect to Ollama service' })
         }
     })
+}
+
+function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
+
+    return fetch(url, {
+        ...init,
+        signal: controller.signal,
+    }).finally(() => clearTimeout(timeout))
 }
 
 function chatRequestBodySchema() {

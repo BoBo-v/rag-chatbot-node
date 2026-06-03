@@ -456,9 +456,18 @@ function legacyJsonPath(): string {
 
 function selectSearchCandidateRows(fileId?: string, query?: string): FtsChunkRow[] {
     const ftsRows = selectFtsChunkRows(fileId, query)
-    if (ftsRows.length > 0) return ftsRows
+    const vectorRows = selectChunkRows(fileId)
+    const rowsById = new Map<string, FtsChunkRow>()
 
-    return selectChunkRows(fileId).map(row => ({ ...row, fts_rank: null }))
+    for (const row of vectorRows) {
+        rowsById.set(row.id, { ...row, fts_rank: null })
+    }
+
+    for (const row of ftsRows) {
+        rowsById.set(row.id, row)
+    }
+
+    return Array.from(rowsById.values())
 }
 
 function selectFtsChunkRows(fileId?: string, query?: string): FtsChunkRow[] {
