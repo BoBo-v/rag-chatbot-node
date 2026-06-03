@@ -5,7 +5,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev:server": "tsx watch server/index.ts",
-    "verify": "tsx server/scripts/verify.ts"
+    "verify": "tsx server/scripts/verify.ts",
+    "typecheck": "tsc --noEmit"
   },
   "author": "",
   "license": "ISC",
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@types/pdf-parse": "^1.1.5",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
   }
 }

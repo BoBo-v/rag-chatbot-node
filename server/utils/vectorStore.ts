@@ -177,7 +177,7 @@ export async function listFiles(): Promise<StoredFile[]> {
         SELECT id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash
         FROM files
         ORDER BY created_at DESC
-    `).all() as FileRow[]
+    `).all() as unknown as FileRow[]
 
     return rows.map(rowToFile)
 }
@@ -485,7 +485,7 @@ function selectFtsChunkRows(fileId?: string, query?: string): FtsChunkRow[] {
             WHERE chunks_fts MATCH ? ${fileFilter}
             ORDER BY fts_rank ASC
             LIMIT 80
-        `).all(...params) as FtsChunkRow[]
+        `).all(...params) as unknown as FtsChunkRow[]
 
         return rows.map((row, index) => ({ ...row, fts_position: index }))
     } catch {
@@ -500,14 +500,14 @@ function selectChunkRows(fileId?: string): ChunkRow[] {
             FROM chunks
             WHERE file_id = ?
             ORDER BY chunk_index ASC
-        `).all(fileId) as ChunkRow[]
+        `).all(fileId) as unknown as ChunkRow[]
     }
 
     return getDb().prepare(`
         SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number
         FROM chunks
         ORDER BY created_at DESC, chunk_index ASC
-    `).all() as ChunkRow[]
+    `).all() as unknown as ChunkRow[]
 }
 
 function selectAllChunkRows(database: DatabaseSync): ChunkRow[] {
@@ -515,7 +515,7 @@ function selectAllChunkRows(database: DatabaseSync): ChunkRow[] {
         SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number
         FROM chunks
         ORDER BY created_at DESC, chunk_index ASC
-    `).all() as ChunkRow[]
+    `).all() as unknown as ChunkRow[]
 }
 
 function buildFtsQuery(query?: string): string {

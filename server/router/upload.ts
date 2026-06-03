@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify'
-import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 import { splitTextToChunks } from '../utils/chunker'
 import { getEmbeddings } from '../utils/embedding'
@@ -15,7 +14,6 @@ import {
 } from '../utils/vectorStore'
 import { config } from '../utils/config'
 
-const require = createRequire(import.meta.url)
 const pdfParse = require('pdf-parse')
 
 export async function uploadRoutes(app: FastifyInstance) {

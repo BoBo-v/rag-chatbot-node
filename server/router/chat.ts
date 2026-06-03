@@ -104,7 +104,7 @@ export async function chatRoutes(app: FastifyInstance) {
 
             if (!response.ok) {
                 const errText = await response.text()
-                reply.status(response.status)
+                reply.raw.statusCode = response.status
                 return reply.send({ error: errText })
             }
 
@@ -134,7 +134,7 @@ export async function chatRoutes(app: FastifyInstance) {
 
             if (!response.ok) {
                 const errText = await response.text()
-                reply.status(response.status)
+                reply.raw.statusCode = response.status
                 return reply.send({ error: errText })
             }
 
