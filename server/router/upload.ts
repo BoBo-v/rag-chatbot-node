@@ -1,8 +1,18 @@
 import type { FastifyInstance } from 'fastify'
 import { createRequire } from 'node:module'
+import { createHash } from 'node:crypto'
 import { splitTextToChunks } from '../utils/chunker'
 import { getEmbeddings } from '../utils/embedding'
-import { addFileWithChunks, deleteFile, getFileDetail, listFiles, search } from '../utils/vectorStore'
+import {
+    addFileWithChunks,
+    deleteFile,
+    getFileByContentHash,
+    getFileDetail,
+    listFiles,
+    replaceFileWithChunks,
+    search,
+    type FileDetail,
+} from '../utils/vectorStore'
 import { config } from '../utils/config'
 
 const require = createRequire(import.meta.url)
@@ -15,6 +25,16 @@ export async function uploadRoutes(app: FastifyInstance) {
             summary: '上传知识库文件',
             description: '上传 txt、md 或 pdf 文件，解析文本后切块、生成 embedding，并写入本地向量存储。',
             consumes: ['multipart/form-data'],
+            querystring: {
+                type: 'object',
+                properties: {
+                    overwrite: {
+                        type: 'boolean',
+                        default: false,
+                        description: '是否覆盖相同内容 hash 的已有文件',
+                    },
+                },
+            },
             response: {
                 200: {
                     description: '上传成功',
@@ -31,6 +51,8 @@ export async function uploadRoutes(app: FastifyInstance) {
                                 },
                             },
                         },
+                        deduplicated: { type: 'boolean', description: '是否命中已有相同内容文件' },
+                        overwritten: { type: 'boolean', description: '是否覆盖了已有相同内容文件' },
                     },
                 },
                 400: { $ref: 'ErrorResponse#' },
@@ -47,6 +69,28 @@ export async function uploadRoutes(app: FastifyInstance) {
 
             const buffer = await file.toBuffer()
             const ext = file.filename.split('.').pop()?.toLowerCase()
+            if (!ext || !['txt', 'md', 'pdf'].includes(ext)) {
+                reply.status(400)
+                return reply.send({ error: 'Unsupported file type. Only txt, md and pdf are supported.' })
+            }
+
+            const contentHash = createHash('sha256').update(buffer).digest('hex')
+            const query = request.query as { overwrite?: boolean | string }
+            const overwrite = query.overwrite === true || query.overwrite === 'true'
+            const existingFile = await getFileByContentHash(contentHash)
+
+            if (existingFile && !overwrite) {
+                return reply.send({
+                    file: fileDetailToStoredFile(existingFile),
+                    chunks: existingFile.chunks.map(chunk => ({
+                        text: chunk.text,
+                        chunkIndex: chunk.chunkIndex,
+                    })),
+                    deduplicated: true,
+                    overwritten: false,
+                })
+            }
+
             let text = ''
 
             if (ext === 'txt' || ext === 'md') {
@@ -54,9 +98,6 @@ export async function uploadRoutes(app: FastifyInstance) {
             } else if (ext === 'pdf') {
                 const data = await pdfParse(buffer)
                 text = data.text
-            } else {
-                reply.status(400)
-                return reply.send({ error: 'Unsupported file type. Only txt, md and pdf are supported.' })
             }
 
             const chunks = splitTextToChunks(text, config.chunkMaxLen, config.chunkOverlap)
@@ -72,13 +113,25 @@ export async function uploadRoutes(app: FastifyInstance) {
                 chunkIndex: chunk.index,
             }))
 
-            const storedFile = await addFileWithChunks({
+            const storeInput = {
                 filename: file.filename,
                 mimeType: file.mimetype,
                 size: buffer.length,
                 charCount: text.length,
+                contentHash,
                 chunks: chunkInputs,
-            })
+            }
+            let deduplicatedAfterRace = false
+            const storedFile = overwrite
+                ? await replaceFileWithChunks(storeInput)
+                : await addFileWithChunks(storeInput).catch(async err => {
+                    if (!isContentHashConflict(err)) throw err
+
+                    const currentFile = await getFileByContentHash(contentHash)
+                    if (!currentFile) throw err
+                    deduplicatedAfterRace = true
+                    return fileDetailToStoredFile(currentFile)
+                })
 
             return reply.send({
                 file: storedFile,
@@ -86,6 +139,8 @@ export async function uploadRoutes(app: FastifyInstance) {
                     text: chunk.text,
                     chunkIndex: chunk.chunkIndex,
                 })),
+                deduplicated: deduplicatedAfterRace,
+                overwritten: Boolean(existingFile && overwrite),
             })
         } catch (err) {
             request.log.error(err)
@@ -265,4 +320,13 @@ function parseBoundedNumber(value: string | undefined, fallback: number, min: nu
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) return fallback
     return Math.min(max, Math.max(min, parsed))
+}
+
+function fileDetailToStoredFile(file: FileDetail) {
+    const { chunks, ...storedFile } = file
+    return storedFile
+}
+
+function isContentHashConflict(err: unknown): boolean {
+    return err instanceof Error && err.message.includes('UNIQUE constraint failed: files.content_hash')
 }

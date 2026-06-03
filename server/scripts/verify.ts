@@ -1,4 +1,12 @@
-import { addFileWithChunks, deleteFile, getFileDetail, listFiles, search } from '../utils/vectorStore'
+import {
+    addFileWithChunks,
+    deleteFile,
+    getFileByContentHash,
+    getFileDetail,
+    listFiles,
+    replaceFileWithChunks,
+    search,
+} from '../utils/vectorStore'
 import { splitTextToChunks } from '../utils/chunker'
 import { getEmbeddings } from '../utils/embedding'
 import { existsSync, rmSync, writeFileSync } from 'node:fs'
@@ -55,6 +63,56 @@ async function verifyVectorStore() {
     }
 }
 
+async function verifyContentHashDedupe() {
+    const hash = 'verify-hash-9527'
+    const created = await addFileWithChunks({
+        filename: 'dedupe-a.txt',
+        mimeType: 'text/plain',
+        size: 1,
+        charCount: 11,
+        contentHash: hash,
+        chunks: [{ text: 'first hash', embedding: [1, 0], chunkIndex: 0 }],
+    })
+
+    const byHash = await getFileByContentHash(hash)
+    assert(byHash?.id === created.id, `get by content hash failed: ${JSON.stringify(byHash)}`)
+
+    let duplicateRejected = false
+    try {
+        await addFileWithChunks({
+            filename: 'dedupe-b.txt',
+            mimeType: 'text/plain',
+            size: 1,
+            charCount: 12,
+            contentHash: hash,
+            chunks: [{ text: 'second hash', embedding: [0, 1], chunkIndex: 0 }],
+        })
+    } catch {
+        duplicateRejected = true
+    }
+    assert(duplicateRejected, 'duplicate content hash should be rejected by store')
+
+    const replaced = await replaceFileWithChunks({
+        filename: 'dedupe-replaced.txt',
+        mimeType: 'text/plain',
+        size: 2,
+        charCount: 13,
+        contentHash: hash,
+        chunks: [{ text: 'replaced hash', embedding: [0, 1], chunkIndex: 0 }],
+    })
+
+    assert(replaced.id !== created.id, 'replace should create a fresh file record')
+    assert(await getFileDetail(created.id) === null, 'replace should delete old file record')
+
+    const replacedDetail = await getFileByContentHash(hash)
+    assert(
+        replacedDetail?.id === replaced.id && replacedDetail.chunks[0]?.text === 'replaced hash',
+        `replace by hash failed: ${JSON.stringify(replacedDetail)}`
+    )
+
+    await deleteFile(replaced.id)
+}
+
 async function verifyLegacyMigration() {
     const target = process.env.VECTOR_STORE_PATH
     if (!target || !target.endsWith('.sqlite')) return
@@ -95,10 +153,11 @@ async function main() {
     await verifyEmbeddingFastPath()
     await verifyLegacyMigration()
     await verifyVectorStore()
+    await verifyContentHashDedupe()
 
     console.log(JSON.stringify({
         ok: true,
-        checks: ['chunker', 'embedding-empty-input', 'legacy-migration', 'vector-store'],
+        checks: ['chunker', 'embedding-empty-input', 'legacy-migration', 'vector-store', 'content-hash-dedupe'],
     }))
 }
 

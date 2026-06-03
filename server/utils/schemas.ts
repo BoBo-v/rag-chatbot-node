@@ -20,6 +20,7 @@ export function registerSchemas(app: FastifyInstance): void {
             charCount: { type: 'number', description: '解析后的文本字符数' },
             chunkCount: { type: 'number', description: '切块数量' },
             createdAt: { type: 'string', description: '创建时间' },
+            contentHash: { type: 'string', description: '文件内容 SHA-256 hash，用于去重' },
         },
     })
 
@@ -49,6 +50,7 @@ export function registerSchemas(app: FastifyInstance): void {
             charCount: { type: 'number', description: '解析后的文本字符数' },
             chunkCount: { type: 'number', description: '切块数量' },
             createdAt: { type: 'string', description: '创建时间' },
+            contentHash: { type: 'string', description: '文件内容 SHA-256 hash，用于去重' },
             chunks: {
                 type: 'array',
                 description: '文件切块列表',

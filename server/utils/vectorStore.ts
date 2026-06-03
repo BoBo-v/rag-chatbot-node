@@ -12,6 +12,7 @@ export interface StoredFile {
     charCount: number
     chunkCount: number
     createdAt: string
+    contentHash?: string
 }
 
 export interface StoredChunk {
@@ -40,6 +41,7 @@ interface AddFileInput {
     mimeType: string
     size: number
     charCount: number
+    contentHash?: string
     chunks: Array<{
         text: string
         embedding: number[]
@@ -67,6 +69,7 @@ interface FileRow {
     char_count: number
     chunk_count: number
     created_at: string
+    content_hash: string | null
 }
 
 interface LegacyVectorStoreData {
@@ -78,6 +81,7 @@ interface LegacyVectorStoreData {
         charCount?: number
         chunkCount?: number
         createdAt?: string
+        contentHash?: string
     }>
     chunks?: Array<{
         id?: string
@@ -98,42 +102,28 @@ let mutationQueue = Promise.resolve()
 export async function addFileWithChunks(input: AddFileInput): Promise<StoredFile> {
     return enqueueMutation(async () => {
         const database = getDb()
-        const now = new Date().toISOString()
-        const file: StoredFile = {
-            id: randomUUID(),
-            filename: input.filename,
-            mimeType: input.mimeType,
-            size: input.size,
-            charCount: input.charCount,
-            chunkCount: input.chunks.length,
-            createdAt: now,
-        }
-
         database.exec('BEGIN')
         try {
-            database.prepare(`
-                INSERT INTO files (id, filename, mime_type, size, char_count, chunk_count, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            `).run(file.id, file.filename, file.mimeType, file.size, file.charCount, file.chunkCount, file.createdAt)
+            const file = insertFileWithChunks(database, input)
+            database.exec('COMMIT')
+            return file
+        } catch (err) {
+            database.exec('ROLLBACK')
+            throw err
+        }
+    })
+}
 
-            const insertChunk = database.prepare(`
-                INSERT INTO chunks (id, file_id, filename, chunk_index, text, embedding, created_at, page_number)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            `)
-
-            for (const chunk of input.chunks) {
-                insertChunk.run(
-                    randomUUID(),
-                    file.id,
-                    file.filename,
-                    chunk.chunkIndex,
-                    chunk.text,
-                    JSON.stringify(chunk.embedding),
-                    now,
-                    chunk.pageNumber ?? null
-                )
+export async function replaceFileWithChunks(input: AddFileInput): Promise<StoredFile> {
+    return enqueueMutation(async () => {
+        const database = getDb()
+        database.exec('BEGIN')
+        try {
+            if (input.contentHash) {
+                database.prepare('DELETE FROM files WHERE content_hash = ?').run(input.contentHash)
             }
 
+            const file = insertFileWithChunks(database, input)
             database.exec('COMMIT')
             return file
         } catch (err) {
@@ -173,7 +163,7 @@ export async function search(
 
 export async function listFiles(): Promise<StoredFile[]> {
     const rows = getDb().prepare(`
-        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at
+        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash
         FROM files
         ORDER BY created_at DESC
     `).all() as FileRow[]
@@ -183,7 +173,7 @@ export async function listFiles(): Promise<StoredFile[]> {
 
 export async function getFileDetail(fileId: string): Promise<FileDetail | null> {
     const fileRow = getDb().prepare(`
-        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at
+        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash
         FROM files
         WHERE id = ?
     `).get(fileId) as FileRow | undefined
@@ -202,6 +192,17 @@ export async function getFileDetail(fileId: string): Promise<FileDetail | null> 
         })
 
     return { ...rowToFile(fileRow), chunks }
+}
+
+export async function getFileByContentHash(contentHash: string): Promise<FileDetail | null> {
+    const fileRow = getDb().prepare(`
+        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash
+        FROM files
+        WHERE content_hash = ?
+    `).get(contentHash) as FileRow | undefined
+
+    if (!fileRow) return null
+    return getFileDetail(fileRow.id)
 }
 
 export async function deleteFile(fileId: string): Promise<boolean> {
@@ -238,7 +239,8 @@ function getDb(): DatabaseSync {
             size INTEGER NOT NULL,
             char_count INTEGER NOT NULL,
             chunk_count INTEGER NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            content_hash TEXT
         );
 
         CREATE TABLE IF NOT EXISTS chunks (
@@ -255,6 +257,7 @@ function getDb(): DatabaseSync {
 
         CREATE INDEX IF NOT EXISTS idx_chunks_file_id ON chunks(file_id);
     `)
+    ensureFileHashColumn(db)
 
     if (firstOpen) {
         db.exec('PRAGMA user_version = 1')
@@ -280,8 +283,8 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
     database.exec('BEGIN')
     try {
         const insertFile = database.prepare(`
-            INSERT OR IGNORE INTO files (id, filename, mime_type, size, char_count, chunk_count, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO files (id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `)
         const insertChunk = database.prepare(`
             INSERT OR IGNORE INTO chunks (id, file_id, filename, chunk_index, text, embedding, created_at, page_number)
@@ -297,7 +300,8 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
                 file.size ?? 0,
                 file.charCount ?? 0,
                 file.chunkCount ?? chunks.filter(chunk => chunk.fileId === file.id).length,
-                file.createdAt ?? new Date().toISOString()
+                file.createdAt ?? new Date().toISOString(),
+                file.contentHash ?? null
             )
         }
 
@@ -325,6 +329,63 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
         database.exec('ROLLBACK')
         throw err
     }
+}
+
+function ensureFileHashColumn(database: DatabaseSync): void {
+    const columns = database.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>
+    if (!columns.some(column => column.name === 'content_hash')) {
+        database.exec('ALTER TABLE files ADD COLUMN content_hash TEXT')
+    }
+
+    database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_files_content_hash ON files(content_hash) WHERE content_hash IS NOT NULL')
+}
+
+function insertFileWithChunks(database: DatabaseSync, input: AddFileInput): StoredFile {
+    const now = new Date().toISOString()
+    const file: StoredFile = {
+        id: randomUUID(),
+        filename: input.filename,
+        mimeType: input.mimeType,
+        size: input.size,
+        charCount: input.charCount,
+        chunkCount: input.chunks.length,
+        createdAt: now,
+        contentHash: input.contentHash,
+    }
+
+    database.prepare(`
+        INSERT INTO files (id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        file.id,
+        file.filename,
+        file.mimeType,
+        file.size,
+        file.charCount,
+        file.chunkCount,
+        file.createdAt,
+        file.contentHash ?? null
+    )
+
+    const insertChunk = database.prepare(`
+        INSERT INTO chunks (id, file_id, filename, chunk_index, text, embedding, created_at, page_number)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+
+    for (const chunk of input.chunks) {
+        insertChunk.run(
+            randomUUID(),
+            file.id,
+            file.filename,
+            chunk.chunkIndex,
+            chunk.text,
+            JSON.stringify(chunk.embedding),
+            now,
+            chunk.pageNumber ?? null
+        )
+    }
+
+    return file
 }
 
 function legacyJsonPath(): string {
@@ -361,6 +422,7 @@ function rowToFile(row: FileRow): StoredFile {
         charCount: row.char_count,
         chunkCount: row.chunk_count,
         createdAt: row.created_at,
+        contentHash: row.content_hash ?? undefined,
     }
 }
 
