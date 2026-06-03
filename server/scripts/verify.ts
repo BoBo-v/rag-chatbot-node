@@ -113,6 +113,66 @@ async function verifyContentHashDedupe() {
     await deleteFile(replaced.id)
 }
 
+async function verifyHybridSearch() {
+    const created = await Promise.all([
+        addFileWithChunks({
+            filename: 'hybrid-a.txt',
+            mimeType: 'text/plain',
+            size: 1,
+            charCount: 40,
+            chunks: [{ text: 'alpha-9527 exact keyword policy', embedding: [0, 1], chunkIndex: 0 }],
+        }),
+        addFileWithChunks({
+            filename: 'hybrid-b.txt',
+            mimeType: 'text/plain',
+            size: 1,
+            charCount: 40,
+            chunks: [{ text: 'semantic fallback only', embedding: [1, 0], chunkIndex: 0 }],
+        }),
+        addFileWithChunks({
+            filename: 'hybrid-c.txt',
+            mimeType: 'text/plain',
+            size: 1,
+            charCount: 80,
+            chunks: [
+                { text: 'duplicate overlap ticket-9527 section one', embedding: [1, 0], chunkIndex: 0 },
+                { text: 'duplicate overlap ticket-9527 section one', embedding: [1, 0], chunkIndex: 1 },
+            ],
+        }),
+    ])
+
+    const keywordResults = await search([0, 1], {
+        query: 'alpha-9527',
+        topK: 5,
+        minScore: 0,
+    })
+    assert(
+        keywordResults[0]?.fileId === created[0].id,
+        `FTS keyword ranking failed: ${JSON.stringify(keywordResults)}`
+    )
+
+    const fallbackResults = await search([1, 0], {
+        query: 'no matching lexical token',
+        topK: 5,
+        minScore: 0,
+        fileId: created[1].id,
+    })
+    assert(
+        fallbackResults.length === 1 && fallbackResults[0].fileId === created[1].id,
+        `vector fallback failed: ${JSON.stringify(fallbackResults)}`
+    )
+
+    const dedupedResults = await search([1, 0], {
+        query: 'duplicate overlap ticket-9527',
+        topK: 5,
+        minScore: 0,
+        fileId: created[2].id,
+    })
+    assert(dedupedResults.length === 1, `near duplicate chunks should be collapsed: ${JSON.stringify(dedupedResults)}`)
+
+    await Promise.all(created.map(file => deleteFile(file.id)))
+}
+
 async function verifyLegacyMigration() {
     const target = process.env.VECTOR_STORE_PATH
     if (!target || !target.endsWith('.sqlite')) return
@@ -154,10 +214,18 @@ async function main() {
     await verifyLegacyMigration()
     await verifyVectorStore()
     await verifyContentHashDedupe()
+    await verifyHybridSearch()
 
     console.log(JSON.stringify({
         ok: true,
-        checks: ['chunker', 'embedding-empty-input', 'legacy-migration', 'vector-store', 'content-hash-dedupe'],
+        checks: [
+            'chunker',
+            'embedding-empty-input',
+            'legacy-migration',
+            'vector-store',
+            'content-hash-dedupe',
+            'hybrid-search',
+        ],
     }))
 }
 

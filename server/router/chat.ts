@@ -242,12 +242,13 @@ function buildRagSystemPrompt(chunks: SearchResult[]): string {
         .join('\n---\n')
 
     return [
-        'Answer the user using the reference materials below when they are relevant.',
-        'If the references do not contain enough information, say so clearly.',
-        'When using a reference, cite it with filename and chunk number, for example: [test.pdf chunk 2].',
-        'Do not invent facts or citations that are not present in the references.',
+        '你是一个基于知识库回答问题的助手。',
+        '请优先使用下面的引用材料回答用户问题；如果引用材料不足以支持答案，必须明确说明“知识库资料不足，无法确认”。',
+        '使用引用材料时，必须标注来源文件名和 chunk 编号，例如：[test.pdf chunk 2]。',
+        '不要编造引用材料中不存在的事实、数字、结论或来源。',
+        '如果引用材料与问题无关，请直接说明没有检索到足够相关的知识库内容。',
         '',
-        'References:',
+        '引用材料：',
         context,
     ].join('\n')
 }

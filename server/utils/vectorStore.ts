@@ -61,6 +61,11 @@ interface ChunkRow {
     page_number: number | null
 }
 
+interface FtsChunkRow extends ChunkRow {
+    fts_rank: number | null
+    fts_position?: number
+}
+
 interface FileRow {
     id: string
     filename: string
@@ -140,11 +145,12 @@ export async function search(
     const topK = options.topK ?? config.ragTopK
     const minScore = options.minScore ?? config.ragMinScore
     const queryTokens = tokenize(options.query ?? '')
-    const rows = selectChunkRows(options.fileId)
+    const rows = selectSearchCandidateRows(options.fileId, options.query)
     const scored = rows.map(row => {
         const chunk = rowToChunk(row)
         const vectorScore = cosineSimilarity(queryEmbedding, chunk.embedding)
-        const keywordScore = keywordSimilarity(queryTokens, chunk.text)
+        const lexicalScore = normalizeFtsRank((row as FtsChunkRow).fts_rank, (row as FtsChunkRow).fts_position)
+        const keywordScore = Math.max(lexicalScore, keywordSimilarity(queryTokens, chunk.text))
         const score = combineScores(vectorScore, keywordScore)
 
         return {
@@ -158,7 +164,12 @@ export async function search(
     return scored
         .filter(chunk => chunk.score >= minScore)
         .sort((a, b) => b.score - a.score)
-        .slice(0, topK)
+        .reduce<SearchResult[]>((selected, candidate) => {
+            if (selected.length >= topK) return selected
+            if (selected.some(item => isNearDuplicate(item.text, candidate.text))) return selected
+            selected.push(candidate)
+            return selected
+        }, [])
 }
 
 export async function listFiles(): Promise<StoredFile[]> {
@@ -258,6 +269,7 @@ function getDb(): DatabaseSync {
         CREATE INDEX IF NOT EXISTS idx_chunks_file_id ON chunks(file_id);
     `)
     ensureFileHashColumn(db)
+    ensureFtsTable(db)
 
     if (firstOpen) {
         db.exec('PRAGMA user_version = 1')
@@ -373,8 +385,9 @@ function insertFileWithChunks(database: DatabaseSync, input: AddFileInput): Stor
     `)
 
     for (const chunk of input.chunks) {
+        const chunkId = randomUUID()
         insertChunk.run(
-            randomUUID(),
+            chunkId,
             file.id,
             file.filename,
             chunk.chunkIndex,
@@ -388,12 +401,96 @@ function insertFileWithChunks(database: DatabaseSync, input: AddFileInput): Stor
     return file
 }
 
+function ensureFtsTable(database: DatabaseSync): void {
+    database.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+            chunk_id UNINDEXED,
+            file_id UNINDEXED,
+            filename,
+            text
+        );
+
+        CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+            INSERT INTO chunks_fts (chunk_id, file_id, filename, text)
+            VALUES (new.id, new.file_id, new.filename, new.filename || char(10) || new.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+            DELETE FROM chunks_fts WHERE chunk_id = old.id;
+        END;
+    `)
+
+    const countRow = database.prepare('SELECT COUNT(*) AS count FROM chunks_fts').get() as { count: number }
+    if (countRow.count > 0) return
+
+    const rows = selectAllChunkRows(database)
+    for (const row of rows) {
+        upsertFtsChunk(database, {
+            id: row.id,
+            fileId: row.file_id,
+            filename: row.filename,
+            chunkIndex: row.chunk_index,
+            text: row.text,
+        })
+    }
+}
+
+function upsertFtsChunk(
+    database: DatabaseSync,
+    chunk: { id: string; fileId: string; filename: string; chunkIndex: number; text: string }
+): void {
+    database.prepare('DELETE FROM chunks_fts WHERE chunk_id = ?').run(chunk.id)
+    database.prepare(`
+        INSERT INTO chunks_fts (chunk_id, file_id, filename, text)
+        VALUES (?, ?, ?, ?)
+    `).run(chunk.id, chunk.fileId, chunk.filename, `${chunk.filename}\n${chunk.text}`)
+}
+
 function legacyJsonPath(): string {
     if (dbPath.endsWith('.sqlite')) {
         return dbPath.replace(/\.sqlite$/, '.json')
     }
 
     return `${dbPath}.json`
+}
+
+function selectSearchCandidateRows(fileId?: string, query?: string): FtsChunkRow[] {
+    const ftsRows = selectFtsChunkRows(fileId, query)
+    if (ftsRows.length > 0) return ftsRows
+
+    return selectChunkRows(fileId).map(row => ({ ...row, fts_rank: null }))
+}
+
+function selectFtsChunkRows(fileId?: string, query?: string): FtsChunkRow[] {
+    const ftsQuery = buildFtsQuery(query)
+    if (!ftsQuery) return []
+
+    const fileFilter = fileId ? 'AND c.file_id = ?' : ''
+    const params = fileId ? [ftsQuery, fileId] : [ftsQuery]
+
+    try {
+        const rows = getDb().prepare(`
+            SELECT
+                c.id,
+                c.file_id,
+                c.filename,
+                c.chunk_index,
+                c.text,
+                c.embedding,
+                c.created_at,
+                c.page_number,
+                bm25(chunks_fts) AS fts_rank
+            FROM chunks_fts
+            JOIN chunks c ON c.id = chunks_fts.chunk_id
+            WHERE chunks_fts MATCH ? ${fileFilter}
+            ORDER BY fts_rank ASC
+            LIMIT 80
+        `).all(...params) as FtsChunkRow[]
+
+        return rows.map((row, index) => ({ ...row, fts_position: index }))
+    } catch {
+        return []
+    }
 }
 
 function selectChunkRows(fileId?: string): ChunkRow[] {
@@ -411,6 +508,21 @@ function selectChunkRows(fileId?: string): ChunkRow[] {
         FROM chunks
         ORDER BY created_at DESC, chunk_index ASC
     `).all() as ChunkRow[]
+}
+
+function selectAllChunkRows(database: DatabaseSync): ChunkRow[] {
+    return database.prepare(`
+        SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number
+        FROM chunks
+        ORDER BY created_at DESC, chunk_index ASC
+    `).all() as ChunkRow[]
+}
+
+function buildFtsQuery(query?: string): string {
+    const tokens = tokenize(query ?? '')
+    return tokens
+        .map(token => `"${token.replace(/"/g, '""')}"`)
+        .join(' OR ')
 }
 
 function rowToFile(row: FileRow): StoredFile {
@@ -488,6 +600,23 @@ function keywordSimilarity(queryTokens: string[], text: string): number {
     }
 
     return totalWeight === 0 ? 0 : matchedWeight / totalWeight
+}
+
+function normalizeFtsRank(rank: number | null | undefined, position?: number): number {
+    if (typeof rank !== 'number' || !Number.isFinite(rank)) return 0
+    if (typeof position === 'number') return Math.max(0.1, 1 - (position * 0.02))
+    return 0.5
+}
+
+function isNearDuplicate(a: string, b: string): boolean {
+    const aTokens = tokenize(a)
+    const bTokens = tokenize(b)
+    if (aTokens.length === 0 || bTokens.length === 0) return false
+
+    const bSet = new Set(bTokens)
+    const overlap = aTokens.filter(token => bSet.has(token)).length
+    const ratio = overlap / Math.min(aTokens.length, bTokens.length)
+    return ratio >= 0.9
 }
 
 function tokenize(text: string): string[] {
