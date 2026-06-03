@@ -13,7 +13,16 @@ import { registerSchemas } from './utils/schemas'
 const app = Fastify({ logger: true })
 
 app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } }) // 10MB upload limit
-app.register(cors, { origin: true })
+app.register(cors, {
+    origin: (origin, callback) => {
+        if (!origin || config.corsOrigins.includes(origin)) {
+            callback(null, true)
+            return
+        }
+
+        callback(new Error('CORS origin is not allowed'), false)
+    },
+})
 app.register(swagger, {
     openapi: {
         info: {
@@ -37,6 +46,19 @@ app.register(swagger, {
     },
 })
 registerSchemas(app)
+app.addHook('preHandler', async (request, reply) => {
+    if (!config.apiKey || isPublicRoute(request.url)) return
+
+    const apiKey = request.headers['x-api-key']
+    const authorization = request.headers.authorization
+    const bearerToken = authorization?.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : ''
+    const providedKey = Array.isArray(apiKey) ? apiKey[0] : apiKey
+
+    if (providedKey === config.apiKey || bearerToken === config.apiKey) return
+
+    reply.status(401)
+    return reply.send({ error: 'Unauthorized' })
+})
 app.register(systemRoutes)
 app.register(uploadRoutes)
 app.register(chatRoutes)
@@ -49,3 +71,7 @@ app.listen({ port: config.port }, (err, address) => {
     if (err) throw err
     console.log(`Server running at ${address}`)
 })
+
+function isPublicRoute(url: string): boolean {
+    return url === '/api/health' || url.startsWith('/docs')
+}

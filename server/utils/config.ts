@@ -8,6 +8,16 @@ function numberFromEnv(name: string, fallback: number): number {
     return Number.isFinite(value) ? value : fallback
 }
 
+function listFromEnv(name: string, fallback: string[]): string[] {
+    const raw = process.env[name]
+    if (!raw) return fallback
+
+    return raw
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean)
+}
+
 const chunkMaxLen = Math.max(100, numberFromEnv('CHUNK_MAX_LEN', 700))
 const chunkOverlap = Math.min(
     chunkMaxLen - 1,
@@ -18,6 +28,8 @@ export const config = {
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
     defaultModel: process.env.DEFAULT_MODEL || 'qwen2.5:7b',
     port: numberFromEnv('PORT', 3001),
+    apiKey: process.env.API_KEY || '',
+    corsOrigins: listFromEnv('CORS_ORIGIN', ['http://localhost:3000', 'http://127.0.0.1:3000']),
     embeddingModel: process.env.EMBEDDING_MODEL || 'nomic-embed-text',
     ragTopK: numberFromEnv('RAG_TOP_K', 5),
     ragMinScore: numberFromEnv('RAG_MIN_SCORE', 0.35),
