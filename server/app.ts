@@ -9,6 +9,7 @@ import { uploadRoutes } from './router/upload'
 import { config } from './utils/config'
 import { registerSchemas } from './utils/schemas'
 import { closeVectorStore } from './utils/vectorStore'
+import { AppError, toErrorResponse } from './utils/errors'
 
 export function buildApp(options: { logger?: boolean } = {}) {
     const app = Fastify({ logger: options.logger ?? true })
@@ -21,7 +22,11 @@ export function buildApp(options: { logger?: boolean } = {}) {
                 return
             }
 
-            callback(new Error('CORS origin is not allowed'), false)
+            callback(new AppError(
+                403,
+                'CORS_ORIGIN_NOT_ALLOWED',
+                `当前前端地址 ${origin} 不在后端 CORS_ORIGIN 白名单中，请更新 .env 后重启服务。`
+            ), false)
         },
     })
     app.register(swagger, {
@@ -47,6 +52,16 @@ export function buildApp(options: { logger?: boolean } = {}) {
         },
     })
     registerSchemas(app)
+    app.setErrorHandler((err, request, reply) => {
+        const response = toErrorResponse(err)
+        if (response.shouldLog) request.log.error(err)
+        reply.status(response.statusCode)
+        return reply.send(response.body)
+    })
+    app.setNotFoundHandler((request, reply) => {
+        reply.status(404)
+        return reply.send({ error: '接口不存在，请检查请求路径和方法。', code: 'NOT_FOUND' })
+    })
     app.addHook('preHandler', async (request, reply) => {
         if (!config.apiKey || isPublicRoute(request.url)) return
 
@@ -58,7 +73,7 @@ export function buildApp(options: { logger?: boolean } = {}) {
         if (providedKey === config.apiKey || bearerToken === config.apiKey) return
 
         reply.status(401)
-        return reply.send({ error: 'Unauthorized' })
+        return reply.send({ error: '未授权，请提供正确的 x-api-key 或 Authorization Bearer Token。', code: 'UNAUTHORIZED' })
     })
     app.addHook('onClose', async () => {
         closeVectorStore()

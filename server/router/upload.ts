@@ -13,6 +13,7 @@ import {
     type FileDetail,
 } from '../utils/vectorStore'
 import { config } from '../utils/config'
+import { classifyUploadError } from '../utils/errors'
 
 const pdfParse = require('pdf-parse')
 
@@ -54,6 +55,8 @@ export async function uploadRoutes(app: FastifyInstance) {
                     },
                 },
                 400: { $ref: 'ErrorResponse#' },
+                413: { $ref: 'ErrorResponse#' },
+                500: { $ref: 'ErrorResponse#' },
                 502: { $ref: 'ErrorResponse#' },
             },
         },
@@ -62,14 +65,14 @@ export async function uploadRoutes(app: FastifyInstance) {
             const file = await request.file()
             if (!file) {
                 reply.status(400)
-                return reply.send({ error: 'Please upload a file' })
+                return reply.send({ error: '请上传文件。', code: 'UPLOAD_FILE_REQUIRED' })
             }
 
             const buffer = await file.toBuffer()
             const ext = file.filename.split('.').pop()?.toLowerCase()
             if (!ext || !['txt', 'md', 'pdf'].includes(ext)) {
                 reply.status(400)
-                return reply.send({ error: 'Unsupported file type. Only txt, md and pdf are supported.' })
+                return reply.send({ error: '不支持的文件类型，仅支持 txt、md、pdf。', code: 'UNSUPPORTED_FILE_TYPE' })
             }
 
             const contentHash = createHash('sha256').update(buffer).digest('hex')
@@ -101,7 +104,7 @@ export async function uploadRoutes(app: FastifyInstance) {
             const chunks = splitTextToChunks(text, config.chunkMaxLen, config.chunkOverlap)
             if (chunks.length === 0) {
                 reply.status(400)
-                return reply.send({ error: 'No readable text found in this file' })
+                return reply.send({ error: '文件中没有解析到可读取文本。', code: 'NO_READABLE_TEXT' })
             }
 
             const embeddings = await getEmbeddings(chunks.map(c => c.text))
@@ -141,9 +144,10 @@ export async function uploadRoutes(app: FastifyInstance) {
                 overwritten: Boolean(existingFile && overwrite),
             })
         } catch (err) {
-            request.log.error(err)
-            reply.status(502)
-            return reply.send({ error: 'Failed to parse, embed, or store uploaded file' })
+            const uploadError = classifyUploadError(err)
+            if (uploadError.statusCode >= 500) request.log.error(err)
+            reply.status(uploadError.statusCode as 400 | 413 | 500 | 502)
+            return reply.send({ error: uploadError.message, code: uploadError.code })
         }
     })
 
@@ -197,7 +201,7 @@ export async function uploadRoutes(app: FastifyInstance) {
 
         if (!file) {
             reply.status(404)
-            return reply.send({ error: 'File not found' })
+            return reply.send({ error: '文件不存在。', code: 'FILE_NOT_FOUND' })
         }
 
         return { file }
@@ -232,7 +236,7 @@ export async function uploadRoutes(app: FastifyInstance) {
 
         if (!deleted) {
             reply.status(404)
-            return reply.send({ error: 'File not found' })
+            return reply.send({ error: '文件不存在。', code: 'FILE_NOT_FOUND' })
         }
 
         return { ok: true }
@@ -268,46 +272,53 @@ export async function uploadRoutes(app: FastifyInstance) {
                     },
                 },
                 400: { $ref: 'ErrorResponse#' },
+                502: { $ref: 'ErrorResponse#' },
             },
         },
     }, async (request, reply) => {
-        const query = request.query as {
-            q?: string
-            topK?: string
-            minScore?: string
-            fileId?: string
-        }
+        try {
+            const query = request.query as {
+                q?: string
+                topK?: string
+                minScore?: string
+                fileId?: string
+            }
 
-        if (!query.q || typeof query.q !== 'string') {
-            reply.status(400)
-            return reply.send({ error: 'q is required' })
-        }
+            if (!query.q || typeof query.q !== 'string') {
+                reply.status(400)
+                return reply.send({ error: '查询参数 q 不能为空。', code: 'QUERY_REQUIRED' })
+            }
 
-        const topK = parseBoundedNumber(query.topK, config.ragTopK, 1, 20)
-        const minScore = parseBoundedNumber(query.minScore, config.ragMinScore, 0, 1)
-        const [embedding] = await getEmbeddings([query.q])
-        const results = await search(embedding, {
-            topK,
-            minScore,
-            fileId: query.fileId,
-            query: query.q,
-        })
+            const topK = parseBoundedNumber(query.topK, config.ragTopK, 1, 20)
+            const minScore = parseBoundedNumber(query.minScore, config.ragMinScore, 0, 1)
+            const [embedding] = await getEmbeddings([query.q])
+            const results = await search(embedding, {
+                topK,
+                minScore,
+                fileId: query.fileId,
+                query: query.q,
+            })
 
-        return {
-            query: query.q,
-            topK,
-            minScore,
-            results: results.map(result => ({
-                id: result.id,
-                fileId: result.fileId,
-                filename: result.filename,
-                chunkIndex: result.chunkIndex,
-                score: result.score,
-                vectorScore: result.vectorScore,
-                keywordScore: result.keywordScore,
-                text: result.text,
-                pageNumber: result.pageNumber,
-            })),
+            return {
+                query: query.q,
+                topK,
+                minScore,
+                results: results.map(result => ({
+                    id: result.id,
+                    fileId: result.fileId,
+                    filename: result.filename,
+                    chunkIndex: result.chunkIndex,
+                    score: result.score,
+                    vectorScore: result.vectorScore,
+                    keywordScore: result.keywordScore,
+                    text: result.text,
+                    pageNumber: result.pageNumber,
+                })),
+            }
+        } catch (err) {
+            request.log.error(err)
+            reply.status(502)
+            return reply.send({ error: 'RAG 检索失败，请确认 Ollama embedding 服务和向量库状态正常。', code: 'RAG_SEARCH_FAILED' })
         }
     })
 }

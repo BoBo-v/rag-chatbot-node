@@ -3,6 +3,7 @@ import { getEmbeddings } from '../utils/embedding'
 import { search, type SearchResult } from '../utils/vectorStore'
 import { config } from '../utils/config'
 import { getChatProvider, listChatProviders, type ChatProviderId } from '../llm'
+import { AppError } from '../utils/errors'
 
 interface ChatMessage {
     role: string
@@ -60,7 +61,7 @@ export async function chatRoutes(app: FastifyInstance) {
         } catch (err) {
             request.log.error(err)
             reply.status(502)
-            return reply.send({ error: 'Failed to retrieve RAG context' })
+            return reply.send({ error: 'RAG 上下文检索失败，请确认 Ollama embedding 服务和向量库状态正常。', code: 'RAG_CONTEXT_FAILED' })
         }
     })
 
@@ -104,8 +105,9 @@ export async function chatRoutes(app: FastifyInstance) {
             return reply.send(stream)
         } catch (err) {
             request.log.error(err)
-            reply.status(502)
-            return reply.send({ error: 'Failed to call model provider or retrieve RAG context' })
+            const providerError = classifyChatProviderError(err)
+            reply.status(providerError.statusCode as 400 | 502)
+            return reply.send({ error: providerError.message, code: providerError.code })
         }
     })
 
@@ -144,6 +146,7 @@ export async function chatRoutes(app: FastifyInstance) {
             summary: '查询 Ollama 模型列表',
             description: '代理调用 Ollama 的 /api/tags 接口，返回本地可用模型。',
             response: {
+                400: { $ref: 'ErrorResponse#' },
                 502: { $ref: 'ErrorResponse#' },
             },
         },
@@ -156,14 +159,17 @@ export async function chatRoutes(app: FastifyInstance) {
             if (!response.ok) {
                 const errText = await response.text()
                 reply.raw.statusCode = response.status
-                return reply.send({ error: errText })
+                return reply.send({
+                    error: errText || 'Ollama 返回错误，请检查 Ollama 服务状态。',
+                    code: 'OLLAMA_TAGS_FAILED',
+                })
             }
 
             return reply.send(await response.json())
         } catch (err) {
             request.log.error(err)
             reply.status(502)
-            return reply.send({ error: 'Failed to connect to Ollama service' })
+            return reply.send({ error: '无法连接 Ollama 服务，请确认 Ollama 已启动。', code: 'OLLAMA_SERVICE_UNAVAILABLE' })
         }
     })
 }
@@ -212,12 +218,12 @@ function chatRequestBodySchema() {
 
 function validateChatBody(body: ChatRequestBody): string | null {
     if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
-        return 'messages cannot be empty'
+        return 'messages 不能为空'
     }
 
     const lastMessage = body.messages[body.messages.length - 1]
     if (!lastMessage?.content || typeof lastMessage.content !== 'string') {
-        return 'last message content cannot be empty'
+        return '最后一条消息 content 不能为空'
     }
 
     return null
@@ -288,4 +294,22 @@ function buildRagSystemPrompt(chunks: SearchResult[]): string {
         '引用材料：',
         context,
     ].join('\n')
+}
+
+function classifyChatProviderError(err: unknown): AppError {
+    const message = err instanceof Error ? err.message : ''
+
+    if (message.includes('OPENAI_API_KEY is not configured')) {
+        return new AppError(400, 'OPENAI_NOT_CONFIGURED', 'OpenAI 未配置，请先在后端 .env 设置 OPENAI_API_KEY。')
+    }
+
+    if (message.includes('ANTHROPIC_API_KEY is not configured')) {
+        return new AppError(400, 'ANTHROPIC_NOT_CONFIGURED', 'Claude 未配置，请先在后端 .env 设置 ANTHROPIC_API_KEY。')
+    }
+
+    if (message.includes('fetch failed') || message.includes('aborted') || message.includes('Failed to fetch')) {
+        return new AppError(502, 'MODEL_PROVIDER_UNAVAILABLE', '模型厂商服务调用失败，请检查厂商配置、网络连接或本地 Ollama 状态。')
+    }
+
+    return new AppError(502, 'MODEL_PROVIDER_FAILED', '模型厂商返回错误，请查看后端日志中的上游错误详情。')
 }

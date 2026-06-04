@@ -31,6 +31,43 @@ async function main() {
 
         const unauthorized = await fetch(`http://127.0.0.1:${port}/api/files`)
         assert(unauthorized.status === 401, `expected 401 without api key, got ${unauthorized.status}`)
+        const unauthorizedBody = await unauthorized.json() as { code?: string }
+        assert(unauthorizedBody.code === 'UNAUTHORIZED', `unauthorized should include code: ${JSON.stringify(unauthorizedBody)}`)
+
+        const corsRejected = await fetch(`http://127.0.0.1:${port}/api/files`, {
+            headers: { Origin: 'http://localhost:5999', ...authHeaders(apiKey) },
+        })
+        assert(corsRejected.status === 403, `expected 403 for disallowed CORS origin, got ${corsRejected.status}`)
+        const corsBody = await corsRejected.json() as { code?: string; error?: string }
+        assert(corsBody.code === 'CORS_ORIGIN_NOT_ALLOWED', `cors rejection should include code: ${JSON.stringify(corsBody)}`)
+        assert(Boolean(corsBody.error), 'cors rejection should include user-facing error')
+
+        const notFound = await fetchJsonError(`http://127.0.0.1:${port}/api/not-exists`, {
+            headers: authHeaders(apiKey),
+        })
+        assert(notFound.status === 404, `expected 404 for missing route, got ${notFound.status}`)
+        assert(notFound.body.code === 'NOT_FOUND', `not found should include code: ${JSON.stringify(notFound.body)}`)
+
+        const badSearch = await fetchJsonError(`http://127.0.0.1:${port}/api/search`, {
+            headers: authHeaders(apiKey),
+        })
+        assert(badSearch.status === 400, `expected 400 for missing search q, got ${badSearch.status}`)
+        assert(badSearch.body.code === 'VALIDATION_ERROR', `search validation should include code: ${JSON.stringify(badSearch.body)}`)
+
+        const chatMissingProviderConfig = await fetchJsonError(`http://127.0.0.1:${port}/api/chat`, {
+            method: 'POST',
+            headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                provider: 'openai',
+                rag: false,
+                messages: [{ role: 'user', content: 'hello' }],
+            }),
+        })
+        assert(chatMissingProviderConfig.status === 400, `expected 400 for unconfigured OpenAI, got ${chatMissingProviderConfig.status}`)
+        assert(
+            chatMissingProviderConfig.body.code === 'OPENAI_NOT_CONFIGURED',
+            `chat provider config error should include code: ${JSON.stringify(chatMissingProviderConfig.body)}`
+        )
 
         const swagger = await fetchJson<{ info?: { title?: string } }>(`http://127.0.0.1:${port}/docs/json`)
         assert(swagger.info?.title, 'swagger json should be public and valid')
@@ -89,7 +126,7 @@ async function main() {
 
         console.log(JSON.stringify({
             ok: true,
-            checks: ['auth', 'swagger', 'providers', 'upload', 'search', 'chat-context', 'delete'],
+            checks: ['auth', 'cors-error', 'not-found', 'search-validation', 'provider-error', 'swagger', 'providers', 'upload', 'search', 'chat-context', 'delete'],
         }))
     } finally {
         if (app) await app.close()
@@ -105,6 +142,17 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     }
 
     return JSON.parse(text) as T
+}
+
+async function fetchJsonError(url: string, init?: RequestInit): Promise<{
+    status: number
+    body: { error?: string; code?: string }
+}> {
+    const res = await fetch(url, init)
+    return {
+        status: res.status,
+        body: await res.json() as { error?: string; code?: string },
+    }
 }
 
 function authHeaders(apiKey: string): Record<string, string> {

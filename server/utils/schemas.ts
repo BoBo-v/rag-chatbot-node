@@ -6,6 +6,7 @@ export function registerSchemas(app: FastifyInstance): void {
         type: 'object',
         properties: {
             error: { type: 'string', description: '错误信息' },
+            code: { type: 'string', description: '错误代码，便于前端做分支处理' },
         },
     })
 
