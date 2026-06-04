@@ -1,5 +1,5 @@
 import { config } from '../utils/config'
-import { fetchWithTimeout, ndjsonLine } from './stream'
+import { chatDoneLine, chatErrorLine, chatTextLine, fetchWithTimeout } from './stream'
 import type { ChatProviderClient, ChatProviderInfo, ChatStreamInput } from './types'
 
 export const ollamaProvider: ChatProviderClient = {
@@ -32,7 +32,7 @@ export const ollamaProvider: ChatProviderClient = {
     },
 }
 
-function ollamaNdjsonToUnifiedStream(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+export function ollamaNdjsonToUnifiedStream(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
     const reader = body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -41,7 +41,7 @@ function ollamaNdjsonToUnifiedStream(body: ReadableStream<Uint8Array>): Readable
     const sendDone = (controller: ReadableStreamDefaultController<Uint8Array>) => {
         if (doneSent) return
         doneSent = true
-        controller.enqueue(ndjsonLine({ type: 'done' }))
+        controller.enqueue(chatDoneLine())
     }
 
     return new ReadableStream({
@@ -63,24 +63,21 @@ function ollamaNdjsonToUnifiedStream(body: ReadableStream<Uint8Array>): Readable
                         }
 
                         const delta = parsed.message?.content
-                        if (delta) controller.enqueue(ndjsonLine({ type: 'text', delta }))
+                        if (delta) controller.enqueue(chatTextLine(delta))
                         if (parsed.done) sendDone(controller)
                     }
                 }
 
                 if (buffer.trim()) {
                     const parsed = JSON.parse(buffer) as { message?: { content?: string }; done?: boolean }
-                    if (parsed.message?.content) controller.enqueue(ndjsonLine({ type: 'text', delta: parsed.message.content }))
+                    if (parsed.message?.content) controller.enqueue(chatTextLine(parsed.message.content))
                     if (parsed.done) sendDone(controller)
                 }
 
                 sendDone(controller)
                 controller.close()
             } catch (err) {
-                controller.enqueue(ndjsonLine({
-                    type: 'error',
-                    error: err instanceof Error ? err.message : 'Ollama stream failed',
-                }))
+                controller.enqueue(chatErrorLine(err instanceof Error ? err.message : 'Ollama stream failed'))
                 controller.close()
             }
         },

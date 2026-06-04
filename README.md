@@ -7,7 +7,7 @@ Fastify backend for local knowledge-base RAG. It supports uploading `txt`, `md`,
 - Node.js with `node:sqlite` support
 - Ollama running locally
 - Required Ollama models:
-  - chat model: `qwen2.5:7b` by default when using `provider: "ollama"`
+  - chat model: `qwen3:8b` by default when using `provider: "ollama"`
   - embedding model: `nomic-embed-text` by default
 - Optional OpenAI API key when using `provider: "openai"`
 - Optional Anthropic API key when using `provider: "anthropic"`
@@ -102,7 +102,7 @@ Provider config:
 
 ```text
 OLLAMA_URL=http://localhost:11434
-DEFAULT_MODEL=qwen2.5:7b
+DEFAULT_MODEL=qwen3:8b
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_DEFAULT_MODEL=gpt-4o
@@ -123,7 +123,7 @@ Example response:
 ```json
 {
   "providers": [
-    { "id": "ollama", "name": "Ollama", "defaultModel": "qwen2.5:7b", "configured": true },
+    { "id": "ollama", "name": "Ollama", "defaultModel": "qwen3:8b", "configured": true },
     { "id": "openai", "name": "OpenAI", "defaultModel": "gpt-4o", "configured": false },
     { "id": "anthropic", "name": "Anthropic Claude", "defaultModel": "claude-sonnet-4-5", "configured": false }
   ]
@@ -148,11 +148,11 @@ Content-Type: application/json
 }
 ```
 
-The response stream is unified NDJSON for all providers:
+The response stream uses Ollama-compatible NDJSON for all providers:
 
 ```json
-{"type":"text","delta":"partial answer"}
-{"type":"done"}
+{"message":{"role":"assistant","content":"partial answer"},"done":false}
+{"message":{"role":"assistant","content":""},"done":true}
 ```
 
 ## Upload Behavior
@@ -167,6 +167,134 @@ Uploaded files are hashed with SHA-256.
 
 - Same content upload returns the existing file with `deduplicated: true`.
 - `POST /api/upload?overwrite=true` replaces the existing file with the same content hash.
+
+Upload progress is available through Server-Sent Events. Frontend adapters can keep the same callback style as chat streaming:
+
+```ts
+export interface UploadRuntimeConfig {
+  baseUrl?: string
+  apiKey?: string
+}
+
+export interface UploadProgress {
+  id: string
+  phase: 'receiving' | 'parsing' | 'chunking' | 'embedding' | 'storing' | 'completed' | 'failed'
+  percent: number
+  message: string
+  loaded?: number
+  total?: number
+  done: boolean
+  error?: string
+  updatedAt: string
+}
+
+export async function uploadKnowledgeFile(
+  file: File,
+  runtime: UploadRuntimeConfig,
+  onProgress: (progress: UploadProgress) => void,
+  onDone: () => void,
+  signal?: AbortSignal,
+  overwrite = false
+): Promise<unknown> {
+  const baseUrl = (runtime.baseUrl ?? 'http://127.0.0.1:3001').replace(/\/$/, '')
+  const progressId = crypto.randomUUID()
+  const headers = runtime.apiKey ? { 'x-api-key': runtime.apiKey } : undefined
+  let isDone = false
+
+  const progressTask = readUploadProgress(
+    `${baseUrl}/api/upload/progress/${progressId}`,
+    headers,
+    progress => {
+      onProgress(progress)
+      if (progress.done && !isDone) {
+        isDone = true
+        onDone()
+      }
+    },
+    signal
+  )
+
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const url = new URL(`${baseUrl}/api/upload`)
+  url.searchParams.set('progressId', progressId)
+  if (overwrite) url.searchParams.set('overwrite', 'true')
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: formData,
+      signal,
+    })
+
+    if (!res.ok) throw new Error(`Upload error ${res.status}: ${await res.text()}`)
+    return await res.json()
+  } finally {
+    await progressTask.catch(() => undefined)
+    if (!isDone) onDone()
+  }
+}
+
+async function readUploadProgress(
+  url: string,
+  headers: Record<string, string> | undefined,
+  onProgress: (progress: UploadProgress) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const res = await fetch(url, { headers, signal })
+  if (!res.ok) throw new Error(`Upload progress error ${res.status}: ${await res.text()}`)
+
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let dataLines: string[] = []
+  let aborted = false
+
+  signal?.addEventListener('abort', () => {
+    aborted = true
+    reader.cancel()
+  })
+
+  const dispatch = () => {
+    if (!dataLines.length) return
+    const progress = JSON.parse(dataLines.join('\n')) as UploadProgress
+    onProgress(progress)
+    dataLines = []
+  }
+
+  try {
+    let buffer = ''
+    while (true) {
+      if (aborted) break
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        const text = line.replace(/\r$/, '')
+        if (!text) {
+          dispatch()
+        } else if (text.startsWith('data:')) {
+          dataLines.push(text.slice('data:'.length).trimStart())
+        }
+      }
+    }
+
+    if (buffer.trim().startsWith('data:')) {
+      dataLines.push(buffer.trim().slice('data:'.length).trimStart())
+    }
+    dispatch()
+  } catch (err: any) {
+    if (err.name !== 'AbortError') throw err
+  } finally {
+    reader.releaseLock()
+  }
+}
+```
 
 ## RAG Retrieval
 

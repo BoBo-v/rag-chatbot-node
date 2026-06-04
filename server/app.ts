@@ -90,5 +90,5 @@ export function buildApp(options: { logger?: boolean } = {}) {
 }
 
 function isPublicRoute(url: string): boolean {
-    return url === '/api/health' || url.startsWith('/docs')
+    return url === '/api/health' || url.startsWith('/docs') || url.startsWith('/api/upload/progress/')
 }

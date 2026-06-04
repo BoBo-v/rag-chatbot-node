@@ -1,5 +1,5 @@
 import { config } from '../utils/config'
-import { fetchWithTimeout, parseSseTextDeltas, textDeltaStream } from './stream'
+import { fetchWithTimeout, sseJsonToUnifiedStream } from './stream'
 import type { ChatMessage, ChatProviderClient, ChatProviderInfo, ChatStreamInput } from './types'
 
 export const anthropicProvider: ChatProviderClient = {
@@ -16,7 +16,7 @@ export const anthropicProvider: ChatProviderClient = {
         if (!config.anthropicApiKey) throw new Error('ANTHROPIC_API_KEY is not configured')
 
         const { system, messages } = splitSystemMessages(input.messages)
-        const response = await fetchWithTimeout(`${config.anthropicBaseUrl}/v1/messages`, {
+        const response = await fetchWithTimeout(anthropicMessagesUrl(config.anthropicBaseUrl), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -37,15 +37,31 @@ export const anthropicProvider: ChatProviderClient = {
             throw new Error(errText || `Anthropic response failed: ${response.status}`)
         }
 
-        return textDeltaStream(parseSseTextDeltas(response.body, event => {
-            const delta = event.delta as { type?: string; text?: string } | undefined
-            if (event.type === 'content_block_delta' && delta?.type === 'text_delta' && typeof delta.text === 'string') {
-                return delta.text
-            }
+        return sseJsonToUnifiedStream(response.body, {
+            extractDelta(event) {
+                const delta = event.delta as { type?: string; text?: string } | undefined
+                if (event.type === 'content_block_delta' && delta?.type === 'text_delta' && typeof delta.text === 'string') {
+                    return delta.text
+                }
 
-            return ''
-        }))
+                return ''
+            },
+            isDone(event) {
+                return event.type === 'message_stop'
+            },
+            extractError(event) {
+                if (event.type !== 'error') return undefined
+
+                const error = event.error as { message?: string } | undefined
+                return error?.message || 'Anthropic stream failed'
+            },
+        }, 'Anthropic stream failed')
     },
+}
+
+function anthropicMessagesUrl(baseUrl: string): string {
+    const normalized = baseUrl.replace(/\/$/, '')
+    return normalized.endsWith('/messages') ? normalized : `${normalized}/v1/messages`
 }
 
 function splitSystemMessages(messages: ChatMessage[]): {

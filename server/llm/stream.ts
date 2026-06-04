@@ -4,6 +4,27 @@ export function ndjsonLine(value: unknown): Uint8Array {
     return encoder.encode(`${JSON.stringify(value)}\n`)
 }
 
+export function chatTextLine(content: string): Uint8Array {
+    return ndjsonLine({
+        message: { role: 'assistant', content },
+        done: false,
+    })
+}
+
+export function chatDoneLine(): Uint8Array {
+    return ndjsonLine({
+        message: { role: 'assistant', content: '' },
+        done: true,
+    })
+}
+
+export function chatErrorLine(error: string): Uint8Array {
+    return ndjsonLine({
+        error,
+        done: true,
+    })
+}
+
 export function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -19,17 +40,96 @@ export function textDeltaStream(source: AsyncIterable<string>): ReadableStream<U
         async start(controller) {
             try {
                 for await (const delta of source) {
-                    if (delta) controller.enqueue(ndjsonLine({ type: 'text', delta }))
+                    if (delta) controller.enqueue(chatTextLine(delta))
                 }
 
-                controller.enqueue(ndjsonLine({ type: 'done' }))
+                controller.enqueue(chatDoneLine())
                 controller.close()
             } catch (err) {
-                controller.enqueue(ndjsonLine({
-                    type: 'error',
-                    error: err instanceof Error ? err.message : 'LLM stream failed',
-                }))
+                controller.enqueue(chatErrorLine(err instanceof Error ? err.message : 'LLM stream failed'))
                 controller.close()
+            }
+        },
+    })
+}
+
+export interface SseJsonStreamHandlers {
+    extractDelta(event: Record<string, unknown>): string
+    isDone?(event: Record<string, unknown>): boolean
+    extractError?(event: Record<string, unknown>): string | undefined
+}
+
+export function sseJsonToUnifiedStream(
+    stream: ReadableStream<Uint8Array>,
+    handlers: SseJsonStreamHandlers,
+    fallbackError = 'LLM stream failed'
+): ReadableStream<Uint8Array> {
+    const reader = stream.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let doneSent = false
+
+    const sendDone = (controller: ReadableStreamDefaultController<Uint8Array>) => {
+        if (doneSent) return
+        doneSent = true
+        controller.enqueue(chatDoneLine())
+    }
+
+    const handleEventBlock = (block: string, controller: ReadableStreamDefaultController<Uint8Array>) => {
+        const dataLines = block
+            .split('\n')
+            .map(line => line.replace(/\r$/, ''))
+            .filter(line => line.startsWith('data:'))
+            .map(line => line.slice('data:'.length).trimStart())
+
+        if (dataLines.length === 0) return
+
+        const data = dataLines.join('\n').trim()
+        if (!data) return
+
+        if (data === '[DONE]') {
+            sendDone(controller)
+            return
+        }
+
+        const parsed = JSON.parse(data) as Record<string, unknown>
+        const error = handlers.extractError?.(parsed)
+        if (error) {
+            controller.enqueue(chatErrorLine(error))
+            return
+        }
+
+        const delta = handlers.extractDelta(parsed)
+        if (delta) controller.enqueue(chatTextLine(delta))
+        if (handlers.isDone?.(parsed)) sendDone(controller)
+    }
+
+    return new ReadableStream({
+        async start(controller) {
+            try {
+                while (true) {
+                    const { value, done } = await reader.read()
+                    if (done) break
+
+                    buffer += decoder.decode(value, { stream: true })
+                    const parts = buffer.split(/\r?\n\r?\n/)
+                    buffer = parts.pop() ?? ''
+
+                    for (const part of parts) {
+                        handleEventBlock(part, controller)
+                    }
+                }
+
+                buffer += decoder.decode()
+                if (buffer.trim()) handleEventBlock(buffer, controller)
+
+                sendDone(controller)
+                controller.close()
+            } catch (err) {
+                controller.enqueue(chatErrorLine(err instanceof Error ? err.message : fallbackError))
+                controller.close()
+            } finally {
+                reader.releaseLock()
             }
         },
     })

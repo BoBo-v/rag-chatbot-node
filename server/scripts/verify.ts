@@ -10,6 +10,8 @@ import {
 import { splitTextToChunks } from '../utils/chunker'
 import { getEmbeddings } from '../utils/embedding'
 import { existsSync, rmSync, writeFileSync } from 'node:fs'
+import { ollamaNdjsonToUnifiedStream } from '../llm/ollamaProvider'
+import { sseJsonToUnifiedStream } from '../llm/stream'
 
 function assert(condition: unknown, message: string): void {
     if (!condition) throw new Error(message)
@@ -26,6 +28,66 @@ async function verifyChunker() {
 async function verifyEmbeddingFastPath() {
     const embeddings = await getEmbeddings([])
     assert(embeddings.length === 0, 'empty embedding input should return []')
+}
+
+async function verifyUnifiedChatStreams() {
+    const ollamaEvents = await readNdjsonObjects(ollamaNdjsonToUnifiedStream(streamFromText([
+        JSON.stringify({ message: { content: '你' }, done: false }) + '\n',
+        JSON.stringify({ message: { content: '好' }, done: true }) + '\n',
+    ])))
+    assert(
+        JSON.stringify(ollamaEvents) === JSON.stringify([
+            { message: { role: 'assistant', content: '你' }, done: false },
+            { message: { role: 'assistant', content: '好' }, done: false },
+            { message: { role: 'assistant', content: '' }, done: true },
+        ]),
+        `ollama stream normalization failed: ${JSON.stringify(ollamaEvents)}`
+    )
+
+    const openAiEvents = await readNdjsonObjects(sseJsonToUnifiedStream(streamFromText([
+        `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: '你' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: '好' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'response.completed' })}\n\n`,
+    ]), {
+        extractDelta(event) {
+            return event.type === 'response.output_text.delta' && typeof event.delta === 'string' ? event.delta : ''
+        },
+        isDone(event) {
+            return event.type === 'response.completed'
+        },
+    }))
+    assert(
+        JSON.stringify(openAiEvents) === JSON.stringify([
+            { message: { role: 'assistant', content: '你' }, done: false },
+            { message: { role: 'assistant', content: '好' }, done: false },
+            { message: { role: 'assistant', content: '' }, done: true },
+        ]),
+        `openai stream normalization failed: ${JSON.stringify(openAiEvents)}`
+    )
+
+    const anthropicEvents = await readNdjsonObjects(sseJsonToUnifiedStream(streamFromText([
+        `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: '你' } })}\n\n`,
+        `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: '好' } })}\n\n`,
+        `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`,
+    ]), {
+        extractDelta(event) {
+            const delta = event.delta as { type?: string; text?: string } | undefined
+            return event.type === 'content_block_delta' && delta?.type === 'text_delta' && typeof delta.text === 'string'
+                ? delta.text
+                : ''
+        },
+        isDone(event) {
+            return event.type === 'message_stop'
+        },
+    }))
+    assert(
+        JSON.stringify(anthropicEvents) === JSON.stringify([
+            { message: { role: 'assistant', content: '你' }, done: false },
+            { message: { role: 'assistant', content: '好' }, done: false },
+            { message: { role: 'assistant', content: '' }, done: true },
+        ]),
+        `anthropic stream normalization failed: ${JSON.stringify(anthropicEvents)}`
+    )
 }
 
 async function verifyVectorStore() {
@@ -267,6 +329,7 @@ async function verifyLegacyMigration() {
 async function main() {
     await verifyChunker()
     await verifyEmbeddingFastPath()
+    await verifyUnifiedChatStreams()
     await verifyLegacyMigration()
     await verifyVectorStore()
     await verifyContentHashDedupe()
@@ -279,6 +342,7 @@ async function main() {
         checks: [
             'chunker',
             'embedding-empty-input',
+            'unified-chat-streams',
             'legacy-migration',
             'vector-store',
             'content-hash-dedupe',
@@ -287,6 +351,43 @@ async function main() {
             'chinese-fts-ngrams',
         ],
     }))
+}
+
+function streamFromText(parts: string[]): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder()
+    return new ReadableStream({
+        start(controller) {
+            for (const part of parts) {
+                controller.enqueue(encoder.encode(part))
+            }
+            controller.close()
+        },
+    })
+}
+
+async function readNdjsonObjects(stream: ReadableStream<Uint8Array>): Promise<Array<Record<string, unknown>>> {
+    const reader = stream.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    const result: Array<Record<string, unknown>> = []
+
+    while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+            if (line.trim()) result.push(JSON.parse(line) as Record<string, unknown>)
+        }
+    }
+
+    buffer += decoder.decode()
+    if (buffer.trim()) result.push(JSON.parse(buffer.trim()) as Record<string, unknown>)
+
+    return result
 }
 
 main().catch(err => {

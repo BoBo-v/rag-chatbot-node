@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { createHash } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { splitTextToChunks } from '../utils/chunker'
 import { getEmbeddings } from '../utils/embedding'
 import {
@@ -17,7 +18,75 @@ import { classifyUploadError } from '../utils/errors'
 
 const pdfParse = require('pdf-parse')
 
+type UploadProgressPhase = 'receiving' | 'parsing' | 'chunking' | 'embedding' | 'storing' | 'completed' | 'failed'
+
+interface UploadProgress {
+    id: string
+    phase: UploadProgressPhase
+    percent: number
+    message: string
+    loaded?: number
+    total?: number
+    done: boolean
+    error?: string
+    updatedAt: string
+}
+
+const uploadProgressEvents = new EventEmitter()
+const uploadProgressSessions = new Map<string, UploadProgress>()
+const uploadProgressTimers = new Map<string, NodeJS.Timeout>()
+const uploadProgressTtlMs = 10 * 60 * 1000
+
 export async function uploadRoutes(app: FastifyInstance) {
+    app.get('/api/upload/progress/:id', {
+        schema: {
+            tags: ['Knowledge'],
+            summary: '订阅上传进度',
+            description: '通过 Server-Sent Events 返回指定 progressId 的上传和后端处理进度。',
+            params: {
+                type: 'object',
+                required: ['id'],
+                properties: {
+                    id: { type: 'string', description: '上传进度 ID，由前端生成并传给 /api/upload?progressId=...' },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const { id } = request.params as { id: string }
+        const eventName = progressEventName(id)
+        let closed = false
+
+        const cleanup = () => {
+            if (closed) return
+            closed = true
+            uploadProgressEvents.off(eventName, sendProgress)
+        }
+
+        reply.hijack()
+        reply.raw.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+        })
+        reply.raw.write('\n')
+
+        const sendProgress = (progress: UploadProgress) => {
+            if (closed || reply.raw.destroyed) return
+            reply.raw.write(`event: progress\ndata: ${JSON.stringify(progress)}\n\n`)
+            if (progress.done) {
+                cleanup()
+                reply.raw.end()
+            }
+        }
+
+        uploadProgressEvents.on(eventName, sendProgress)
+        const currentProgress = uploadProgressSessions.get(id)
+        if (currentProgress) sendProgress(currentProgress)
+
+        request.raw.on('close', cleanup)
+    })
+
     app.post('/api/upload', {
         schema: {
             tags: ['Knowledge'],
@@ -31,6 +100,10 @@ export async function uploadRoutes(app: FastifyInstance) {
                         type: 'boolean',
                         default: false,
                         description: '是否覆盖相同内容 hash 的已有文件',
+                    },
+                    progressId: {
+                        type: 'string',
+                        description: '可选，前端生成的上传进度 ID。传入后可通过 /api/upload/progress/:id 订阅进度。',
                     },
                 },
             },
@@ -61,26 +134,50 @@ export async function uploadRoutes(app: FastifyInstance) {
             },
         },
     }, async (request, reply) => {
+        const query = request.query as { overwrite?: boolean | string; progressId?: string }
+        const progressId = normalizeProgressId(query.progressId)
+
         try {
             const file = await request.file()
             if (!file) {
+                publishUploadProgress(progressId, {
+                    phase: 'failed',
+                    percent: 100,
+                    message: '请上传文件。',
+                    done: true,
+                    error: 'UPLOAD_FILE_REQUIRED',
+                })
                 reply.status(400)
                 return reply.send({ error: '请上传文件。', code: 'UPLOAD_FILE_REQUIRED' })
             }
 
-            const buffer = await file.toBuffer()
             const ext = file.filename.split('.').pop()?.toLowerCase()
             if (!ext || !['txt', 'md', 'pdf'].includes(ext)) {
+                publishUploadProgress(progressId, {
+                    phase: 'failed',
+                    percent: 100,
+                    message: '不支持的文件类型，仅支持 txt、md、pdf。',
+                    done: true,
+                    error: 'UNSUPPORTED_FILE_TYPE',
+                })
                 reply.status(400)
                 return reply.send({ error: '不支持的文件类型，仅支持 txt、md、pdf。', code: 'UNSUPPORTED_FILE_TYPE' })
             }
 
+            const buffer = await readFileWithProgress(file.file, progressId, request.headers['content-length'])
             const contentHash = createHash('sha256').update(buffer).digest('hex')
-            const query = request.query as { overwrite?: boolean | string }
             const overwrite = query.overwrite === true || query.overwrite === 'true'
             const existingFile = await getFileByContentHash(contentHash)
 
             if (existingFile && !overwrite) {
+                publishUploadProgress(progressId, {
+                    phase: 'completed',
+                    percent: 100,
+                    message: '已存在相同内容文件，复用已有知识库记录。',
+                    loaded: buffer.length,
+                    total: buffer.length,
+                    done: true,
+                })
                 return reply.send({
                     file: fileDetailToStoredFile(existingFile),
                     chunks: existingFile.chunks.map(chunk => ({
@@ -94,6 +191,13 @@ export async function uploadRoutes(app: FastifyInstance) {
 
             let text = ''
 
+            publishUploadProgress(progressId, {
+                phase: 'parsing',
+                percent: 65,
+                message: '正在解析文件内容。',
+                loaded: buffer.length,
+                total: buffer.length,
+            })
             if (ext === 'txt' || ext === 'md') {
                 text = buffer.toString('utf-8')
             } else if (ext === 'pdf') {
@@ -101,12 +205,35 @@ export async function uploadRoutes(app: FastifyInstance) {
                 text = data.text
             }
 
+            publishUploadProgress(progressId, {
+                phase: 'chunking',
+                percent: 72,
+                message: '正在切分文本。',
+                loaded: buffer.length,
+                total: buffer.length,
+            })
             const chunks = splitTextToChunks(text, config.chunkMaxLen, config.chunkOverlap)
             if (chunks.length === 0) {
+                publishUploadProgress(progressId, {
+                    phase: 'failed',
+                    percent: 100,
+                    message: '文件中没有解析到可读取文本。',
+                    loaded: buffer.length,
+                    total: buffer.length,
+                    done: true,
+                    error: 'NO_READABLE_TEXT',
+                })
                 reply.status(400)
                 return reply.send({ error: '文件中没有解析到可读取文本。', code: 'NO_READABLE_TEXT' })
             }
 
+            publishUploadProgress(progressId, {
+                phase: 'embedding',
+                percent: 82,
+                message: `正在生成 ${chunks.length} 个文本块的 embedding。`,
+                loaded: buffer.length,
+                total: buffer.length,
+            })
             const embeddings = await getEmbeddings(chunks.map(c => c.text))
             const chunkInputs = chunks.map((chunk, i) => ({
                 text: chunk.text,
@@ -123,6 +250,13 @@ export async function uploadRoutes(app: FastifyInstance) {
                 chunks: chunkInputs,
             }
             let deduplicatedAfterRace = false
+            publishUploadProgress(progressId, {
+                phase: 'storing',
+                percent: 95,
+                message: '正在写入知识库。',
+                loaded: buffer.length,
+                total: buffer.length,
+            })
             const storedFile = overwrite
                 ? await replaceFileWithChunks(storeInput)
                 : await addFileWithChunks(storeInput).catch(async err => {
@@ -134,6 +268,14 @@ export async function uploadRoutes(app: FastifyInstance) {
                     return fileDetailToStoredFile(currentFile)
                 })
 
+            publishUploadProgress(progressId, {
+                phase: 'completed',
+                percent: 100,
+                message: '上传完成。',
+                loaded: buffer.length,
+                total: buffer.length,
+                done: true,
+            })
             return reply.send({
                 file: storedFile,
                 chunks: chunkInputs.map(chunk => ({
@@ -145,6 +287,13 @@ export async function uploadRoutes(app: FastifyInstance) {
             })
         } catch (err) {
             const uploadError = classifyUploadError(err)
+            publishUploadProgress(progressId, {
+                phase: 'failed',
+                percent: 100,
+                message: uploadError.message,
+                done: true,
+                error: uploadError.code,
+            })
             if (uploadError.statusCode >= 500) request.log.error(err)
             reply.status(uploadError.statusCode as 400 | 413 | 500 | 502)
             return reply.send({ error: uploadError.message, code: uploadError.code })
@@ -338,4 +487,94 @@ function fileDetailToStoredFile(file: FileDetail) {
 
 function isContentHashConflict(err: unknown): boolean {
     return err instanceof Error && err.message.includes('UNIQUE constraint failed: files.content_hash')
+}
+
+async function readFileWithProgress(
+    stream: NodeJS.ReadableStream,
+    progressId: string | undefined,
+    contentLength: string | number | string[] | undefined
+): Promise<Buffer> {
+    const chunks: Buffer[] = []
+    const total = parseContentLength(contentLength)
+    let loaded = 0
+
+    publishUploadProgress(progressId, {
+        phase: 'receiving',
+        percent: 0,
+        message: '正在接收上传文件。',
+        loaded,
+        total,
+    })
+
+    for await (const chunk of stream) {
+        const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        chunks.push(bufferChunk)
+        loaded += bufferChunk.length
+        publishUploadProgress(progressId, {
+            phase: 'receiving',
+            percent: total ? Math.min(60, Math.round((loaded / total) * 60)) : 0,
+            message: '正在接收上传文件。',
+            loaded,
+            total,
+        })
+    }
+
+    publishUploadProgress(progressId, {
+        phase: 'receiving',
+        percent: 60,
+        message: '文件接收完成。',
+        loaded,
+        total: loaded,
+    })
+
+    return Buffer.concat(chunks)
+}
+
+function normalizeProgressId(value: string | undefined): string | undefined {
+    if (!value) return undefined
+    const trimmed = value.trim()
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(trimmed)) return undefined
+    return trimmed
+}
+
+function parseContentLength(value: string | number | string[] | undefined): number | undefined {
+    const rawValue = Array.isArray(value) ? value[0] : value
+    if (rawValue === undefined) return undefined
+
+    const parsed = Number(rawValue)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function publishUploadProgress(
+    id: string | undefined,
+    progress: Omit<UploadProgress, 'id' | 'updatedAt' | 'done'> & { done?: boolean }
+): void {
+    if (!id) return
+
+    const nextProgress: UploadProgress = {
+        id,
+        phase: progress.phase,
+        percent: Math.max(0, Math.min(100, progress.percent)),
+        message: progress.message,
+        loaded: progress.loaded,
+        total: progress.total,
+        done: progress.done ?? false,
+        error: progress.error,
+        updatedAt: new Date().toISOString(),
+    }
+    uploadProgressSessions.set(id, nextProgress)
+    uploadProgressEvents.emit(progressEventName(id), nextProgress)
+
+    if (nextProgress.done) {
+        const existingTimer = uploadProgressTimers.get(id)
+        if (existingTimer) clearTimeout(existingTimer)
+        uploadProgressTimers.set(id, setTimeout(() => {
+            uploadProgressSessions.delete(id)
+            uploadProgressTimers.delete(id)
+        }, uploadProgressTtlMs))
+    }
+}
+
+function progressEventName(id: string): string {
+    return `upload-progress:${id}`
 }

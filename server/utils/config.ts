@@ -26,7 +26,7 @@ const chunkOverlap = Math.min(
 
 export const config = {
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
-    defaultModel: process.env.DEFAULT_MODEL || 'qwen2.5:7b',
+    defaultModel: process.env.DEFAULT_MODEL || 'qwen3:8b',
     port: numberFromEnv('PORT', 3001),
     apiKey: process.env.API_KEY || '',
     corsOrigins: listFromEnv('CORS_ORIGIN', ['http://localhost:3000', 'http://127.0.0.1:3000']),
