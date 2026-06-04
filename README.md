@@ -1,14 +1,16 @@
 # Node Fastify RAG
 
-Fastify backend for local knowledge-base RAG with Ollama. It supports uploading `txt`, `md`, and `pdf` files, chunking text, generating embeddings, storing chunks in SQLite, hybrid retrieval, and RAG chat proxying.
+Fastify backend for local knowledge-base RAG. It supports uploading `txt`, `md`, and `pdf` files, chunking text, generating embeddings with Ollama, storing chunks in SQLite, hybrid retrieval, and chat streaming through Ollama, OpenAI, or Anthropic Claude.
 
 ## Requirements
 
 - Node.js with `node:sqlite` support
 - Ollama running locally
 - Required Ollama models:
-  - chat model: `qwen2.5:7b` by default
+  - chat model: `qwen2.5:7b` by default when using `provider: "ollama"`
   - embedding model: `nomic-embed-text` by default
+- Optional OpenAI API key when using `provider: "openai"`
+- Optional Anthropic API key when using `provider: "anthropic"`
 
 ## Setup
 
@@ -47,7 +49,7 @@ npm run dev:server
 
 - `typecheck`: TypeScript static check.
 - `verify`: logic-level checks for chunking, migration, vector store, dedupe, hybrid retrieval, and Chinese FTS ngrams.
-- `verify:http`: interface-level check for auth, Swagger, upload, search, chat context, and delete.
+- `verify:http`: interface-level check for auth, Swagger, providers, upload, search, chat context, and delete.
 
 ## Authentication
 
@@ -83,7 +85,75 @@ Public routes:
 - `GET /api/search?q=...`
 - `POST /api/chat/context`
 - `POST /api/chat`
+- `GET /api/providers`
 - `GET /api/tags`
+
+## Model Providers
+
+Frontend clients should send only `provider` and `model`. API keys stay on the backend in `.env`.
+
+Supported providers:
+
+- `ollama`: local Ollama chat, always marked as configured.
+- `openai`: OpenAI Responses API, requires `OPENAI_API_KEY`.
+- `anthropic`: Anthropic Claude Messages API, requires `ANTHROPIC_API_KEY`.
+
+Provider config:
+
+```text
+OLLAMA_URL=http://localhost:11434
+DEFAULT_MODEL=qwen2.5:7b
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_DEFAULT_MODEL=gpt-4o
+ANTHROPIC_API_KEY=
+ANTHROPIC_BASE_URL=https://api.anthropic.com
+ANTHROPIC_DEFAULT_MODEL=claude-sonnet-4-5
+OLLAMA_TIMEOUT_MS=120000
+```
+
+Query provider availability:
+
+```http
+GET /api/providers
+```
+
+Example response:
+
+```json
+{
+  "providers": [
+    { "id": "ollama", "name": "Ollama", "defaultModel": "qwen2.5:7b", "configured": true },
+    { "id": "openai", "name": "OpenAI", "defaultModel": "gpt-4o", "configured": false },
+    { "id": "anthropic", "name": "Anthropic Claude", "defaultModel": "claude-sonnet-4-5", "configured": false }
+  ]
+}
+```
+
+Chat request:
+
+```http
+POST /api/chat
+Content-Type: application/json
+```
+
+```json
+{
+  "provider": "openai",
+  "model": "gpt-4o",
+  "rag": true,
+  "messages": [
+    { "role": "user", "content": "根据知识库回答这个问题" }
+  ]
+}
+```
+
+The response stream is unified NDJSON for all providers:
+
+```json
+{"type":"text","delta":"partial answer"}
+{"type":"done"}
+```
 
 ## Upload Behavior
 

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { getEmbeddings } from '../utils/embedding'
 import { search, type SearchResult } from '../utils/vectorStore'
 import { config } from '../utils/config'
+import { getChatProvider, listChatProviders, type ChatProviderId } from '../llm'
 
 interface ChatMessage {
     role: string
@@ -11,6 +12,7 @@ interface ChatMessage {
 interface ChatRequestBody {
     messages: ChatMessage[]
     model?: string
+    provider?: ChatProviderId
     rag?: boolean
     fileId?: string
     topK?: number
@@ -66,7 +68,7 @@ export async function chatRoutes(app: FastifyInstance) {
         schema: {
             tags: ['Chat'],
             summary: 'RAG 对话',
-            description: '根据最后一条用户消息检索相关知识库片段，注入 system 上下文后调用 Ollama chat 接口。可通过 rag=false 关闭 RAG。',
+            description: '根据最后一条用户消息检索相关知识库片段，注入 system 上下文后调用选定模型厂商。可通过 rag=false 关闭 RAG。',
             body: chatRequestBodySchema(),
             response: {
                 400: { $ref: 'ErrorResponse#' },
@@ -92,29 +94,48 @@ export async function chatRoutes(app: FastifyInstance) {
                 })
             }
 
-            const response = await fetchWithTimeout(`${config.ollamaUrl}/api/chat`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: body.model || config.defaultModel,
-                    messages,
-                    stream: true,
-                }),
-            }, config.ollamaTimeoutMs)
-
-            if (!response.ok) {
-                const errText = await response.text()
-                reply.raw.statusCode = response.status
-                return reply.send({ error: errText })
-            }
+            const provider = getChatProvider(body.provider)
+            const stream = await provider.streamChat({
+                model: body.model,
+                messages,
+            })
 
             reply.header('Content-Type', 'application/x-ndjson')
-            return reply.send(response.body)
+            return reply.send(stream)
         } catch (err) {
             request.log.error(err)
             reply.status(502)
-            return reply.send({ error: 'Failed to call Ollama or retrieve RAG context' })
+            return reply.send({ error: 'Failed to call model provider or retrieve RAG context' })
         }
+    })
+
+    app.get('/api/providers', {
+        schema: {
+            tags: ['Chat'],
+            summary: '查询可用模型厂商',
+            description: '返回后端支持的模型厂商及默认模型。OpenAI 和 Claude 只有配置 API Key 后才标记为可用。',
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        providers: {
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    id: { type: 'string', description: '厂商 ID，例如 ollama、openai、anthropic' },
+                                    name: { type: 'string', description: '厂商名称' },
+                                    defaultModel: { type: 'string', description: '默认模型' },
+                                    configured: { type: 'boolean', description: '是否已经配置可用' },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }, async () => {
+        return { providers: listChatProviders() }
     })
 
     app.get('/api/tags', {
@@ -162,7 +183,13 @@ function chatRequestBodySchema() {
         type: 'object',
         required: ['messages'],
         properties: {
-            model: { type: 'string', default: config.defaultModel, description: '可选，Ollama 对话模型名称' },
+            provider: {
+                type: 'string',
+                enum: ['ollama', 'openai', 'anthropic'],
+                default: 'ollama',
+                description: '模型厂商。默认 ollama，可选 openai 或 anthropic。',
+            },
+            model: { type: 'string', default: config.defaultModel, description: '可选，模型名称。不传时使用所选厂商默认模型。' },
             rag: { type: 'boolean', default: true, description: '是否启用 RAG 检索。设为 false 时只调用模型，不注入知识库上下文。' },
             fileId: { type: 'string', description: '可选，限定只检索某个已上传文件。' },
             topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK, description: '可选，覆盖本次 RAG 返回数量。' },

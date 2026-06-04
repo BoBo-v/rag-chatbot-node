@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-function assert(condition: unknown, message: string): void {
+function assert(condition: unknown, message: string): asserts condition {
     if (!condition) throw new Error(message)
 }
 
@@ -18,6 +18,8 @@ async function main() {
     process.env.API_KEY = apiKey
     process.env.VECTOR_STORE_PATH = path.join(tempDir, 'vector-store.sqlite')
     process.env.EMBEDDING_BATCH_SIZE = '1'
+    process.env.OPENAI_API_KEY = ''
+    process.env.ANTHROPIC_API_KEY = ''
 
     try {
         const { buildApp } = await import('../app.js')
@@ -32,6 +34,18 @@ async function main() {
 
         const swagger = await fetchJson<{ info?: { title?: string } }>(`http://127.0.0.1:${port}/docs/json`)
         assert(swagger.info?.title, 'swagger json should be public and valid')
+
+        const providers = await fetchJson<{
+            providers: Array<{ id: string; defaultModel: string; configured: boolean }>
+        }>(`http://127.0.0.1:${port}/api/providers`, { headers: authHeaders(apiKey) })
+        const ollama = providers.providers.find(provider => provider.id === 'ollama')
+        const openai = providers.providers.find(provider => provider.id === 'openai')
+        const anthropic = providers.providers.find(provider => provider.id === 'anthropic')
+        assert(ollama, `ollama provider should exist: ${JSON.stringify(providers)}`)
+        assert(ollama.configured === true, `ollama provider should be configured: ${JSON.stringify(providers)}`)
+        assert(Boolean(ollama.defaultModel), 'ollama provider should expose defaultModel')
+        assert(openai?.configured === false, `openai provider should require API key: ${JSON.stringify(providers)}`)
+        assert(anthropic?.configured === false, `anthropic provider should require API key: ${JSON.stringify(providers)}`)
 
         const formData = new FormData()
         formData.append('file', await fileBlob(uploadPath), 'verify.txt')
@@ -75,7 +89,7 @@ async function main() {
 
         console.log(JSON.stringify({
             ok: true,
-            checks: ['auth', 'swagger', 'upload', 'search', 'chat-context', 'delete'],
+            checks: ['auth', 'swagger', 'providers', 'upload', 'search', 'chat-context', 'delete'],
         }))
     } finally {
         if (app) await app.close()

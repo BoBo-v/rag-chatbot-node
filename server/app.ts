@@ -28,7 +28,7 @@ export function buildApp(options: { logger?: boolean } = {}) {
         openapi: {
             info: {
                 title: 'Node Fastify RAG 接口文档',
-                description: '用于文件上传、本地 RAG 检索和 Ollama 对话代理的 Fastify 接口。',
+                description: '用于文件上传、本地 RAG 检索和多模型厂商对话代理的 Fastify 接口。',
                 version: '1.0.0',
             },
             servers: [
@@ -41,7 +41,7 @@ export function buildApp(options: { logger?: boolean } = {}) {
                 { name: 'System', description: '系统健康检查和服务状态' },
                 { name: 'Knowledge', description: '知识库文件上传、查看和删除' },
                 { name: 'RAG', description: 'RAG 检索调试接口' },
-                { name: 'Chat', description: '带 RAG 上下文的 Ollama 对话接口' },
+                { name: 'Chat', description: '带 RAG 上下文的多模型厂商对话接口' },
                 { name: 'Ollama', description: 'Ollama 模型信息接口' },
             ],
         },
