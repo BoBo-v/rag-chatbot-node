@@ -118,15 +118,49 @@ async function main() {
         assert(context.results.length >= 1, `context should return results: ${JSON.stringify(context)}`)
         assert(context.prompt.includes('引用材料'), 'context prompt should use Chinese RAG instructions')
 
-        const deleted = await fetchJson<{ ok: boolean }>(`http://127.0.0.1:${port}/api/files/${upload.file.id}`, {
+        const badReset = await fetchJsonError(`http://127.0.0.1:${port}/api/vector-store/reset`, {
+            method: 'POST',
+            headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm: 'WRONG' }),
+        })
+        assert(badReset.status === 400, `expected 400 for reset without confirmation, got ${badReset.status}`)
+        assert(
+            badReset.body.code === 'VECTOR_STORE_RESET_CONFIRM_REQUIRED',
+            `reset confirmation error should include code: ${JSON.stringify(badReset.body)}`
+        )
+
+        const reset = await fetchJson<{ ok: boolean; filesDeleted: number; chunksDeleted: number }>(
+            `http://127.0.0.1:${port}/api/vector-store/reset`,
+            {
+                method: 'POST',
+                headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirm: 'RESET_VECTOR_STORE' }),
+            }
+        )
+        assert(reset.ok === true, `reset failed: ${JSON.stringify(reset)}`)
+        assert(reset.filesDeleted >= 1, `reset should delete uploaded file: ${JSON.stringify(reset)}`)
+        assert(reset.chunksDeleted >= 1, `reset should delete uploaded chunks: ${JSON.stringify(reset)}`)
+
+        const filesAfterReset = await fetchJson<{ files: unknown[] }>(`http://127.0.0.1:${port}/api/files`, {
+            headers: authHeaders(apiKey),
+        })
+        assert(filesAfterReset.files.length === 0, `reset should clear files: ${JSON.stringify(filesAfterReset)}`)
+
+        const searchAfterReset = await fetchJson<{ results: unknown[] }>(
+            `http://127.0.0.1:${port}/api/search?q=http-verify-9527&topK=3&minScore=0`,
+            { headers: authHeaders(apiKey) }
+        )
+        assert(searchAfterReset.results.length === 0, `reset should clear search results: ${JSON.stringify(searchAfterReset)}`)
+
+        const deleted = await fetchJsonError(`http://127.0.0.1:${port}/api/files/${upload.file.id}`, {
             method: 'DELETE',
             headers: authHeaders(apiKey),
         })
-        assert(deleted.ok === true, `delete failed: ${JSON.stringify(deleted)}`)
+        assert(deleted.status === 404, `deleted file should not exist after reset: ${JSON.stringify(deleted)}`)
 
         console.log(JSON.stringify({
             ok: true,
-            checks: ['auth', 'cors-error', 'not-found', 'search-validation', 'provider-error', 'swagger', 'providers', 'upload', 'search', 'chat-context', 'delete'],
+            checks: ['auth', 'cors-error', 'not-found', 'search-validation', 'provider-error', 'swagger', 'providers', 'upload', 'search', 'chat-context', 'vector-store-reset'],
         }))
     } finally {
         if (app) await app.close()

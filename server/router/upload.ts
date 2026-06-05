@@ -10,6 +10,7 @@ import {
     getFileDetail,
     listFiles,
     replaceFileWithChunks,
+    resetVectorStore,
     search,
     type FileDetail,
 } from '../utils/vectorStore'
@@ -389,6 +390,53 @@ export async function uploadRoutes(app: FastifyInstance) {
         }
 
         return { ok: true }
+    })
+
+    app.post('/api/vector-store/reset', {
+        schema: {
+            tags: ['Knowledge'],
+            summary: '重置向量库',
+            description: '清空本地知识库中的所有文件、chunk 和全文检索索引。该操作不可恢复，需要请求体传入确认字段。',
+            body: {
+                type: 'object',
+                required: ['confirm'],
+                properties: {
+                    confirm: {
+                        type: 'string',
+                        description: '固定确认文本，用于避免误操作。',
+                    },
+                },
+            },
+            response: {
+                200: {
+                    description: '重置成功',
+                    type: 'object',
+                    properties: {
+                        ok: { type: 'boolean', description: '是否重置成功' },
+                        filesDeleted: { type: 'number', description: '已删除文件数量' },
+                        chunksDeleted: { type: 'number', description: '已删除 chunk 数量' },
+                    },
+                },
+                400: { $ref: 'ErrorResponse#' },
+                500: { $ref: 'ErrorResponse#' },
+            },
+        },
+    }, async (request, reply) => {
+        const body = request.body as { confirm?: string }
+
+        if (body.confirm !== 'RESET_VECTOR_STORE') {
+            reply.status(400)
+            return reply.send({
+                error: '重置向量库需要传入 confirm=RESET_VECTOR_STORE。',
+                code: 'VECTOR_STORE_RESET_CONFIRM_REQUIRED',
+            })
+        }
+
+        const result = await resetVectorStore()
+        return {
+            ok: true,
+            ...result,
+        }
     })
 
     app.get('/api/search', {

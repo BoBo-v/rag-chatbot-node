@@ -82,6 +82,7 @@ Public routes:
 - `GET /api/files`
 - `GET /api/files/:id`
 - `DELETE /api/files/:id`
+- `POST /api/vector-store/reset`
 - `GET /api/search?q=...`
 - `POST /api/chat/context`
 - `POST /api/chat`
@@ -167,6 +168,17 @@ Uploaded files are hashed with SHA-256.
 
 - Same content upload returns the existing file with `deduplicated: true`.
 - `POST /api/upload?overwrite=true` replaces the existing file with the same content hash.
+
+Reset the whole local vector store when changing embedding models or when rebuilding the knowledge base:
+
+```bash
+curl -X POST http://127.0.0.1:3001/api/vector-store/reset \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: your-api-key" \
+  -d "{\"confirm\":\"RESET_VECTOR_STORE\"}"
+```
+
+The reset endpoint clears all stored files, chunks, and the FTS index. It keeps the SQLite database file and schema in place.
 
 Upload progress is available through Server-Sent Events. Frontend adapters can keep the same callback style as chat streaming:
 

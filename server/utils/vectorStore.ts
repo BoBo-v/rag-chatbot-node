@@ -235,6 +235,28 @@ export async function deleteFile(fileId: string): Promise<boolean> {
     })
 }
 
+export async function resetVectorStore(): Promise<{ filesDeleted: number; chunksDeleted: number }> {
+    return enqueueMutation(async () => {
+        const database = getDb()
+        const fileCount = (database.prepare('SELECT COUNT(*) AS count FROM files').get() as { count: number }).count
+        const chunkCount = (database.prepare('SELECT COUNT(*) AS count FROM chunks').get() as { count: number }).count
+
+        database.exec('BEGIN')
+        try {
+            database.prepare('DELETE FROM files').run()
+            database.prepare('DELETE FROM chunks_fts').run()
+            database.exec('COMMIT')
+            return {
+                filesDeleted: fileCount,
+                chunksDeleted: chunkCount,
+            }
+        } catch (err) {
+            database.exec('ROLLBACK')
+            throw err
+        }
+    })
+}
+
 export function closeVectorStore(): void {
     if (!db) return
 

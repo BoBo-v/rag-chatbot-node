@@ -5,6 +5,7 @@ import {
     getFileDetail,
     listFiles,
     replaceFileWithChunks,
+    resetVectorStore,
     search,
 } from '../utils/vectorStore'
 import { splitTextToChunks } from '../utils/chunker'
@@ -175,6 +176,37 @@ async function verifyContentHashDedupe() {
     await deleteFile(replaced.id)
 }
 
+async function verifyVectorStoreReset() {
+    await Promise.all([
+        addFileWithChunks({
+            filename: 'reset-a.txt',
+            mimeType: 'text/plain',
+            size: 1,
+            charCount: 30,
+            chunks: [{ text: 'reset ticket alpha', embedding: [1, 0], chunkIndex: 0 }],
+        }),
+        addFileWithChunks({
+            filename: 'reset-b.txt',
+            mimeType: 'text/plain',
+            size: 1,
+            charCount: 30,
+            chunks: [{ text: 'reset ticket beta', embedding: [0, 1], chunkIndex: 0 }],
+        }),
+    ])
+
+    const reset = await resetVectorStore()
+    assert(reset.filesDeleted >= 2, `reset should delete files: ${JSON.stringify(reset)}`)
+    assert(reset.chunksDeleted >= 2, `reset should delete chunks: ${JSON.stringify(reset)}`)
+    assert((await listFiles()).length === 0, 'reset should leave no files')
+
+    const results = await search([1, 0], {
+        query: 'reset ticket alpha',
+        topK: 5,
+        minScore: 0,
+    })
+    assert(results.length === 0, `reset should clear searchable chunks: ${JSON.stringify(results)}`)
+}
+
 async function verifyHybridSearch() {
     const created = await Promise.all([
         addFileWithChunks({
@@ -333,6 +365,7 @@ async function main() {
     await verifyLegacyMigration()
     await verifyVectorStore()
     await verifyContentHashDedupe()
+    await verifyVectorStoreReset()
     await verifyHybridSearch()
     await verifyFtsAndVectorCandidateMerge()
     await verifyChineseFtsNgrams()
@@ -346,6 +379,7 @@ async function main() {
             'legacy-migration',
             'vector-store',
             'content-hash-dedupe',
+            'vector-store-reset',
             'hybrid-search',
             'fts-vector-merge',
             'chinese-fts-ngrams',
