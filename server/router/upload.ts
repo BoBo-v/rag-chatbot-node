@@ -8,6 +8,7 @@ import {
     deleteFile,
     getFileByContentHash,
     getFileDetail,
+    getVectorStoreStatus,
     listFiles,
     replaceFileWithChunks,
     resetVectorStore,
@@ -437,6 +438,41 @@ export async function uploadRoutes(app: FastifyInstance) {
             ok: true,
             ...result,
         }
+    })
+
+    app.get('/api/vector-store/status', {
+        schema: {
+            tags: ['Knowledge'],
+            summary: '查询向量库状态',
+            description: '返回当前知识库规模、embedding 模型分布，以及是否存在与当前 EMBEDDING_MODEL 不兼容的旧向量。',
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        currentEmbeddingModel: { type: 'string', description: '当前配置的 embedding 模型' },
+                        fileCount: { type: 'number', description: '文件数量' },
+                        chunkCount: { type: 'number', description: 'chunk 数量' },
+                        compatibleChunkCount: { type: 'number', description: '与当前 embedding 模型兼容的 chunk 数量' },
+                        incompatibleChunkCount: { type: 'number', description: '与当前 embedding 模型不兼容或模型未知的 chunk 数量' },
+                        needsReindex: { type: 'boolean', description: '是否建议重置并重新入库' },
+                        embeddingDistributions: {
+                            type: 'array',
+                            description: '按 embedding 模型和维度统计的 chunk 分布',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    embeddingModel: { type: 'string' },
+                                    embeddingDim: { type: ['number', 'null'] },
+                                    chunkCount: { type: 'number' },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }, async () => {
+        return getVectorStoreStatus()
     })
 
     app.get('/api/search', {

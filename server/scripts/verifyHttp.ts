@@ -105,6 +105,20 @@ async function main() {
         )
         assert(search.results.length >= 1, `search should return results: ${JSON.stringify(search)}`)
 
+        const statusBeforeReset = await fetchJson<{
+            currentEmbeddingModel: string
+            fileCount: number
+            chunkCount: number
+            compatibleChunkCount: number
+            incompatibleChunkCount: number
+            needsReindex: boolean
+        }>(`http://127.0.0.1:${port}/api/vector-store/status`, { headers: authHeaders(apiKey) })
+        assert(statusBeforeReset.fileCount === 1, `status should count uploaded file: ${JSON.stringify(statusBeforeReset)}`)
+        assert(statusBeforeReset.chunkCount >= 1, `status should count uploaded chunks: ${JSON.stringify(statusBeforeReset)}`)
+        assert(statusBeforeReset.compatibleChunkCount === statusBeforeReset.chunkCount, `uploaded chunks should be compatible: ${JSON.stringify(statusBeforeReset)}`)
+        assert(statusBeforeReset.incompatibleChunkCount === 0, `new upload should not need reindex: ${JSON.stringify(statusBeforeReset)}`)
+        assert(statusBeforeReset.needsReindex === false, `new upload should not need reindex: ${JSON.stringify(statusBeforeReset)}`)
+
         const context = await fetchJson<{ prompt: string; results: unknown[] }>(`http://127.0.0.1:${port}/api/chat/context`, {
             method: 'POST',
             headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
@@ -146,6 +160,14 @@ async function main() {
         })
         assert(filesAfterReset.files.length === 0, `reset should clear files: ${JSON.stringify(filesAfterReset)}`)
 
+        const statusAfterReset = await fetchJson<{ fileCount: number; chunkCount: number; needsReindex: boolean }>(
+            `http://127.0.0.1:${port}/api/vector-store/status`,
+            { headers: authHeaders(apiKey) }
+        )
+        assert(statusAfterReset.fileCount === 0, `status should clear files after reset: ${JSON.stringify(statusAfterReset)}`)
+        assert(statusAfterReset.chunkCount === 0, `status should clear chunks after reset: ${JSON.stringify(statusAfterReset)}`)
+        assert(statusAfterReset.needsReindex === false, `empty store should not need reindex: ${JSON.stringify(statusAfterReset)}`)
+
         const searchAfterReset = await fetchJson<{ results: unknown[] }>(
             `http://127.0.0.1:${port}/api/search?q=http-verify-9527&topK=3&minScore=0`,
             { headers: authHeaders(apiKey) }
@@ -160,7 +182,7 @@ async function main() {
 
         console.log(JSON.stringify({
             ok: true,
-            checks: ['auth', 'cors-error', 'not-found', 'search-validation', 'provider-error', 'swagger', 'providers', 'upload', 'search', 'chat-context', 'vector-store-reset'],
+            checks: ['auth', 'cors-error', 'not-found', 'search-validation', 'provider-error', 'swagger', 'providers', 'upload', 'search', 'vector-store-status', 'chat-context', 'vector-store-reset'],
         }))
     } finally {
         if (app) await app.close()

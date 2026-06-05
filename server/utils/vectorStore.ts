@@ -13,6 +13,9 @@ export interface StoredFile {
     chunkCount: number
     createdAt: string
     contentHash?: string
+    embeddingModel?: string
+    embeddingDim?: number
+    chunkerVersion?: number
 }
 
 export interface StoredChunk {
@@ -24,6 +27,8 @@ export interface StoredChunk {
     embedding: number[]
     createdAt: string
     pageNumber?: number
+    embeddingModel?: string
+    embeddingDim?: number
 }
 
 export interface SearchResult extends StoredChunk {
@@ -34,6 +39,20 @@ export interface SearchResult extends StoredChunk {
 
 export interface FileDetail extends StoredFile {
     chunks: Array<Omit<StoredChunk, 'embedding'> & { embeddingSize: number }>
+}
+
+export interface VectorStoreStatus {
+    currentEmbeddingModel: string
+    fileCount: number
+    chunkCount: number
+    compatibleChunkCount: number
+    incompatibleChunkCount: number
+    needsReindex: boolean
+    embeddingDistributions: Array<{
+        embeddingModel: string
+        embeddingDim: number | null
+        chunkCount: number
+    }>
 }
 
 interface AddFileInput {
@@ -59,6 +78,8 @@ interface ChunkRow {
     embedding: string
     created_at: string
     page_number: number | null
+    embedding_model: string | null
+    embedding_dim: number | null
 }
 
 interface FtsChunkRow extends ChunkRow {
@@ -75,6 +96,9 @@ interface FileRow {
     chunk_count: number
     created_at: string
     content_hash: string | null
+    embedding_model: string | null
+    embedding_dim: number | null
+    chunker_version: number | null
 }
 
 interface LegacyVectorStoreData {
@@ -147,19 +171,21 @@ export async function search(
     const minScore = options.minScore ?? config.ragMinScore
     const queryTokens = tokenize(options.query ?? '')
     const rows = selectSearchCandidateRows(options.fileId, options.query)
-    const scored = rows.map(row => {
+    const scored = rows.flatMap(row => {
         const chunk = rowToChunk(row)
+        if (!isCompatibleChunk(chunk, queryEmbedding.length)) return []
+
         const vectorScore = cosineSimilarity(queryEmbedding, chunk.embedding)
-        const lexicalScore = normalizeFtsRank((row as FtsChunkRow).fts_rank, (row as FtsChunkRow).fts_position)
+        const lexicalScore = normalizeFtsRank(row.fts_rank, row.fts_position)
         const keywordScore = Math.max(lexicalScore, keywordSimilarity(queryTokens, chunk.text))
         const score = combineScores(vectorScore, keywordScore)
 
-        return {
+        return [{
             ...chunk,
             score,
             vectorScore,
             keywordScore,
-        }
+        }]
     })
 
     return scored
@@ -175,7 +201,7 @@ export async function search(
 
 export async function listFiles(): Promise<StoredFile[]> {
     const rows = getDb().prepare(`
-        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash
+        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash, embedding_model, embedding_dim, chunker_version
         FROM files
         ORDER BY created_at DESC
     `).all() as unknown as FileRow[]
@@ -185,7 +211,7 @@ export async function listFiles(): Promise<StoredFile[]> {
 
 export async function getFileDetail(fileId: string): Promise<FileDetail | null> {
     const fileRow = getDb().prepare(`
-        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash
+        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash, embedding_model, embedding_dim, chunker_version
         FROM files
         WHERE id = ?
     `).get(fileId) as FileRow | undefined
@@ -208,7 +234,7 @@ export async function getFileDetail(fileId: string): Promise<FileDetail | null> 
 
 export async function getFileByContentHash(contentHash: string): Promise<FileDetail | null> {
     const fileRow = getDb().prepare(`
-        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash
+        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash, embedding_model, embedding_dim, chunker_version
         FROM files
         WHERE content_hash = ?
     `).get(contentHash) as FileRow | undefined
@@ -257,6 +283,34 @@ export async function resetVectorStore(): Promise<{ filesDeleted: number; chunks
     })
 }
 
+export async function getVectorStoreStatus(): Promise<VectorStoreStatus> {
+    const database = getDb()
+    const fileCount = (database.prepare('SELECT COUNT(*) AS count FROM files').get() as { count: number }).count
+    const chunkCount = (database.prepare('SELECT COUNT(*) AS count FROM chunks').get() as { count: number }).count
+    const distributions = database.prepare(`
+        SELECT
+            COALESCE(embedding_model, 'unknown') AS embeddingModel,
+            embedding_dim AS embeddingDim,
+            COUNT(*) AS chunkCount
+        FROM chunks
+        GROUP BY COALESCE(embedding_model, 'unknown'), embedding_dim
+        ORDER BY chunkCount DESC
+    `).all() as Array<{ embeddingModel: string; embeddingDim: number | null; chunkCount: number }>
+    const compatibleChunkCount = distributions
+        .filter(item => item.embeddingModel === config.embeddingModel)
+        .reduce((sum, item) => sum + item.chunkCount, 0)
+
+    return {
+        currentEmbeddingModel: config.embeddingModel,
+        fileCount,
+        chunkCount,
+        compatibleChunkCount,
+        incompatibleChunkCount: chunkCount - compatibleChunkCount,
+        needsReindex: chunkCount > compatibleChunkCount,
+        embeddingDistributions: distributions,
+    }
+}
+
 export function closeVectorStore(): void {
     if (!db) return
 
@@ -281,7 +335,10 @@ function getDb(): DatabaseSync {
             char_count INTEGER NOT NULL,
             chunk_count INTEGER NOT NULL,
             created_at TEXT NOT NULL,
-            content_hash TEXT
+            content_hash TEXT,
+            embedding_model TEXT,
+            embedding_dim INTEGER,
+            chunker_version INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS chunks (
@@ -293,12 +350,15 @@ function getDb(): DatabaseSync {
             embedding TEXT NOT NULL,
             created_at TEXT NOT NULL,
             page_number INTEGER,
+            embedding_model TEXT,
+            embedding_dim INTEGER,
             FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
         );
 
         CREATE INDEX IF NOT EXISTS idx_chunks_file_id ON chunks(file_id);
     `)
-    ensureFileHashColumn(db)
+    ensureFileColumns(db)
+    ensureChunkColumns(db)
     ensureFtsTable(db)
 
     if (firstOpen) {
@@ -325,12 +385,18 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
     database.exec('BEGIN')
     try {
         const insertFile = database.prepare(`
-            INSERT OR IGNORE INTO files (id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO files (
+                id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash,
+                embedding_model, embedding_dim, chunker_version
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         const insertChunk = database.prepare(`
-            INSERT OR IGNORE INTO chunks (id, file_id, filename, chunk_index, text, embedding, created_at, page_number)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO chunks (
+                id, file_id, filename, chunk_index, text, embedding, created_at, page_number,
+                embedding_model, embedding_dim
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
 
         for (const file of files) {
@@ -343,7 +409,10 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
                 file.charCount ?? 0,
                 file.chunkCount ?? chunks.filter(chunk => chunk.fileId === file.id).length,
                 file.createdAt ?? new Date().toISOString(),
-                file.contentHash ?? null
+                file.contentHash ?? null,
+                null,
+                null,
+                null
             )
         }
 
@@ -363,7 +432,9 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
                 chunk.text,
                 JSON.stringify(chunk.embedding),
                 chunk.createdAt ?? new Date().toISOString(),
-                chunk.pageNumber ?? null
+                chunk.pageNumber ?? null,
+                null,
+                chunk.embedding.length
             )
             upsertFtsChunk(database, {
                 id: chunkId,
@@ -380,17 +451,37 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
     }
 }
 
-function ensureFileHashColumn(database: DatabaseSync): void {
+function ensureFileColumns(database: DatabaseSync): void {
     const columns = database.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>
     if (!columns.some(column => column.name === 'content_hash')) {
         database.exec('ALTER TABLE files ADD COLUMN content_hash TEXT')
+    }
+    if (!columns.some(column => column.name === 'embedding_model')) {
+        database.exec('ALTER TABLE files ADD COLUMN embedding_model TEXT')
+    }
+    if (!columns.some(column => column.name === 'embedding_dim')) {
+        database.exec('ALTER TABLE files ADD COLUMN embedding_dim INTEGER')
+    }
+    if (!columns.some(column => column.name === 'chunker_version')) {
+        database.exec('ALTER TABLE files ADD COLUMN chunker_version INTEGER')
     }
 
     database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_files_content_hash ON files(content_hash) WHERE content_hash IS NOT NULL')
 }
 
+function ensureChunkColumns(database: DatabaseSync): void {
+    const columns = database.prepare('PRAGMA table_info(chunks)').all() as Array<{ name: string }>
+    if (!columns.some(column => column.name === 'embedding_model')) {
+        database.exec('ALTER TABLE chunks ADD COLUMN embedding_model TEXT')
+    }
+    if (!columns.some(column => column.name === 'embedding_dim')) {
+        database.exec('ALTER TABLE chunks ADD COLUMN embedding_dim INTEGER')
+    }
+}
+
 function insertFileWithChunks(database: DatabaseSync, input: AddFileInput): StoredFile {
     const now = new Date().toISOString()
+    const embeddingDim = input.chunks[0]?.embedding.length ?? null
     const file: StoredFile = {
         id: randomUUID(),
         filename: input.filename,
@@ -400,11 +491,17 @@ function insertFileWithChunks(database: DatabaseSync, input: AddFileInput): Stor
         chunkCount: input.chunks.length,
         createdAt: now,
         contentHash: input.contentHash,
+        embeddingModel: config.embeddingModel,
+        embeddingDim: embeddingDim ?? undefined,
+        chunkerVersion: ftsIndexVersion,
     }
 
     database.prepare(`
-        INSERT INTO files (id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO files (
+            id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash,
+            embedding_model, embedding_dim, chunker_version
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         file.id,
         file.filename,
@@ -413,12 +510,18 @@ function insertFileWithChunks(database: DatabaseSync, input: AddFileInput): Stor
         file.charCount,
         file.chunkCount,
         file.createdAt,
-        file.contentHash ?? null
+        file.contentHash ?? null,
+        file.embeddingModel ?? null,
+        file.embeddingDim ?? null,
+        file.chunkerVersion ?? null
     )
 
     const insertChunk = database.prepare(`
-        INSERT INTO chunks (id, file_id, filename, chunk_index, text, embedding, created_at, page_number)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO chunks (
+            id, file_id, filename, chunk_index, text, embedding, created_at, page_number,
+            embedding_model, embedding_dim
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     for (const chunk of input.chunks) {
@@ -431,7 +534,9 @@ function insertFileWithChunks(database: DatabaseSync, input: AddFileInput): Stor
             chunk.text,
             JSON.stringify(chunk.embedding),
             now,
-            chunk.pageNumber ?? null
+            chunk.pageNumber ?? null,
+            config.embeddingModel,
+            chunk.embedding.length
         )
         upsertFtsChunk(database, {
             id: chunkId,
@@ -532,6 +637,8 @@ function selectFtsChunkRows(fileId?: string, query?: string): FtsChunkRow[] {
                 c.embedding,
                 c.created_at,
                 c.page_number,
+                c.embedding_model,
+                c.embedding_dim,
                 bm25(chunks_fts) AS fts_rank
             FROM chunks_fts
             JOIN chunks c ON c.id = chunks_fts.chunk_id
@@ -549,7 +656,7 @@ function selectFtsChunkRows(fileId?: string, query?: string): FtsChunkRow[] {
 function selectChunkRows(fileId?: string): ChunkRow[] {
     if (fileId) {
         return getDb().prepare(`
-            SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number
+            SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number, embedding_model, embedding_dim
             FROM chunks
             WHERE file_id = ?
             ORDER BY chunk_index ASC
@@ -557,7 +664,7 @@ function selectChunkRows(fileId?: string): ChunkRow[] {
     }
 
     return getDb().prepare(`
-        SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number
+        SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number, embedding_model, embedding_dim
         FROM chunks
         ORDER BY created_at DESC, chunk_index ASC
     `).all() as unknown as ChunkRow[]
@@ -565,7 +672,7 @@ function selectChunkRows(fileId?: string): ChunkRow[] {
 
 function selectAllChunkRows(database: DatabaseSync): ChunkRow[] {
     return database.prepare(`
-        SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number
+        SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number, embedding_model, embedding_dim
         FROM chunks
         ORDER BY created_at DESC, chunk_index ASC
     `).all() as unknown as ChunkRow[]
@@ -588,19 +695,25 @@ function rowToFile(row: FileRow): StoredFile {
         chunkCount: row.chunk_count,
         createdAt: row.created_at,
         contentHash: row.content_hash ?? undefined,
+        embeddingModel: row.embedding_model ?? undefined,
+        embeddingDim: row.embedding_dim ?? undefined,
+        chunkerVersion: row.chunker_version ?? undefined,
     }
 }
 
 function rowToChunk(row: ChunkRow): StoredChunk {
+    const embedding = JSON.parse(row.embedding) as number[]
     return {
         id: row.id,
         fileId: row.file_id,
         filename: row.filename,
         chunkIndex: row.chunk_index,
         text: row.text,
-        embedding: JSON.parse(row.embedding) as number[],
+        embedding,
         createdAt: row.created_at,
         pageNumber: row.page_number ?? undefined,
+        embeddingModel: row.embedding_model ?? undefined,
+        embeddingDim: row.embedding_dim ?? embedding.length,
     }
 }
 
@@ -625,6 +738,10 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
     if (normA === 0 || normB === 0) return 0
     return dot / (Math.sqrt(normA) * Math.sqrt(normB))
+}
+
+function isCompatibleChunk(chunk: StoredChunk, queryEmbeddingDim: number): boolean {
+    return chunk.embeddingModel === config.embeddingModel && chunk.embedding.length === queryEmbeddingDim
 }
 
 function combineScores(vectorScore: number, keywordScore: number): number {

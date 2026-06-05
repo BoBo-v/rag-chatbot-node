@@ -22,6 +22,9 @@ export function registerSchemas(app: FastifyInstance): void {
             chunkCount: { type: 'number', description: '切块数量' },
             createdAt: { type: 'string', description: '创建时间' },
             contentHash: { type: 'string', description: '文件内容 SHA-256 hash，用于去重' },
+            embeddingModel: { type: 'string', description: '入库时使用的 embedding 模型' },
+            embeddingDim: { type: 'number', description: '入库时使用的 embedding 向量维度' },
+            chunkerVersion: { type: 'number', description: '入库时使用的切块/索引版本' },
         },
     })
 
@@ -36,6 +39,8 @@ export function registerSchemas(app: FastifyInstance): void {
             text: { type: 'string', description: 'chunk 文本' },
             createdAt: { type: 'string', description: '创建时间' },
             pageNumber: { type: 'number', description: '页码，当前仅在可解析时返回' },
+            embeddingModel: { type: 'string', description: '入库时使用的 embedding 模型' },
+            embeddingDim: { type: 'number', description: '入库时使用的 embedding 向量维度' },
             embeddingSize: { type: 'number', description: 'embedding 向量维度' },
         },
     })
@@ -52,6 +57,9 @@ export function registerSchemas(app: FastifyInstance): void {
             chunkCount: { type: 'number', description: '切块数量' },
             createdAt: { type: 'string', description: '创建时间' },
             contentHash: { type: 'string', description: '文件内容 SHA-256 hash，用于去重' },
+            embeddingModel: { type: 'string', description: '入库时使用的 embedding 模型' },
+            embeddingDim: { type: 'number', description: '入库时使用的 embedding 向量维度' },
+            chunkerVersion: { type: 'number', description: '入库时使用的切块/索引版本' },
             chunks: {
                 type: 'array',
                 description: '文件切块列表',

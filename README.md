@@ -82,6 +82,7 @@ Public routes:
 - `GET /api/files`
 - `GET /api/files/:id`
 - `DELETE /api/files/:id`
+- `GET /api/vector-store/status`
 - `POST /api/vector-store/reset`
 - `GET /api/search?q=...`
 - `POST /api/chat/context`
@@ -179,6 +180,15 @@ curl -X POST http://127.0.0.1:3001/api/vector-store/reset \
 ```
 
 The reset endpoint clears all stored files, chunks, and the FTS index. It keeps the SQLite database file and schema in place.
+
+Check whether the stored chunks match the current `EMBEDDING_MODEL` before searching or after changing embedding models:
+
+```bash
+curl http://127.0.0.1:3001/api/vector-store/status \
+  -H "x-api-key: your-api-key"
+```
+
+The response includes `compatibleChunkCount`, `incompatibleChunkCount`, `embeddingDistributions`, and `needsReindex`. If `needsReindex` is `true`, reset the vector store and upload the knowledge files again.
 
 Upload progress is available through Server-Sent Events. Frontend adapters can keep the same callback style as chat streaming:
 

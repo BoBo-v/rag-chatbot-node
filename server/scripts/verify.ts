@@ -3,6 +3,7 @@ import {
     deleteFile,
     getFileByContentHash,
     getFileDetail,
+    getVectorStoreStatus,
     listFiles,
     replaceFileWithChunks,
     resetVectorStore,
@@ -207,6 +208,29 @@ async function verifyVectorStoreReset() {
     assert(results.length === 0, `reset should clear searchable chunks: ${JSON.stringify(results)}`)
 }
 
+async function verifyEmbeddingMetadata() {
+    const beforeStatus = await getVectorStoreStatus()
+    const created = await addFileWithChunks({
+        filename: 'metadata.txt',
+        mimeType: 'text/plain',
+        size: 1,
+        charCount: 40,
+        chunks: [{ text: 'metadata current model chunk', embedding: [1, 0], chunkIndex: 0 }],
+    })
+
+    const detail = await getFileDetail(created.id)
+    assert(detail?.embeddingModel === beforeStatus.currentEmbeddingModel, `file should record embedding model: ${JSON.stringify(detail)}`)
+    assert(detail?.embeddingDim === 2, `file should record embedding dim: ${JSON.stringify(detail)}`)
+    assert(detail?.chunks[0]?.embeddingModel === beforeStatus.currentEmbeddingModel, `chunk should record embedding model: ${JSON.stringify(detail)}`)
+    assert(detail?.chunks[0]?.embeddingDim === 2, `chunk should record embedding dim: ${JSON.stringify(detail)}`)
+
+    const status = await getVectorStoreStatus()
+    assert(status.compatibleChunkCount >= 1, `status should count compatible chunks: ${JSON.stringify(status)}`)
+    assert(status.needsReindex === status.incompatibleChunkCount > 0, `status needsReindex should follow incompatible chunks: ${JSON.stringify(status)}`)
+
+    await deleteFile(created.id)
+}
+
 async function verifyHybridSearch() {
     const created = await Promise.all([
         addFileWithChunks({
@@ -366,6 +390,7 @@ async function main() {
     await verifyVectorStore()
     await verifyContentHashDedupe()
     await verifyVectorStoreReset()
+    await verifyEmbeddingMetadata()
     await verifyHybridSearch()
     await verifyFtsAndVectorCandidateMerge()
     await verifyChineseFtsNgrams()
@@ -380,6 +405,7 @@ async function main() {
             'vector-store',
             'content-hash-dedupe',
             'vector-store-reset',
+            'embedding-metadata',
             'hybrid-search',
             'fts-vector-merge',
             'chinese-fts-ngrams',
