@@ -18,6 +18,13 @@ function listFromEnv(name: string, fallback: string[]): string[] {
         .filter(Boolean)
 }
 
+function booleanFromEnv(name: string, fallback: boolean): boolean {
+    const raw = process.env[name]
+    if (!raw) return fallback
+
+    return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase())
+}
+
 const chunkMaxLen = Math.max(100, numberFromEnv('CHUNK_MAX_LEN', 700))
 const chunkOverlap = Math.min(
     chunkMaxLen - 1,
@@ -37,6 +44,7 @@ export const config = {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
     anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
     anthropicDefaultModel: process.env.ANTHROPIC_DEFAULT_MODEL || 'claude-sonnet-4-5',
+    ragEnabled: booleanFromEnv('RAG_ENABLED', true),
     ragTopK: numberFromEnv('RAG_TOP_K', 5),
     ragMinScore: numberFromEnv('RAG_MIN_SCORE', 0.35),
     ragVectorWeight: numberFromEnv('RAG_VECTOR_WEIGHT', 0.8),

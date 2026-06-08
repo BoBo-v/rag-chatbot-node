@@ -150,6 +150,14 @@ Content-Type: application/json
 }
 ```
 
+RAG is controlled globally by `RAG_ENABLED` in `.env`. Per request, `rag` overrides the global default:
+
+```text
+RAG_ENABLED=false
+```
+
+Use `"rag": false` to call the model directly without retrieval, or `"rag": true` to force retrieval for a single request.
+
 The response stream uses Ollama-compatible NDJSON for all providers:
 
 ```json

@@ -69,7 +69,7 @@ export async function chatRoutes(app: FastifyInstance) {
         schema: {
             tags: ['Chat'],
             summary: 'RAG 对话',
-            description: '根据最后一条用户消息检索相关知识库片段，注入 system 上下文后调用选定模型厂商。可通过 rag=false 关闭 RAG。',
+            description: '根据最后一条用户消息检索相关知识库片段，注入 system 上下文后调用选定模型厂商。默认行为由 RAG_ENABLED 控制，可通过 rag=true/false 单次覆盖。',
             body: chatRequestBodySchema(),
             response: {
                 400: { $ref: 'ErrorResponse#' },
@@ -196,7 +196,7 @@ function chatRequestBodySchema() {
                 description: '模型厂商。默认 ollama，可选 openai 或 anthropic。',
             },
             model: { type: 'string', default: config.defaultModel, description: '可选，模型名称。不传时使用所选厂商默认模型。' },
-            rag: { type: 'boolean', default: true, description: '是否启用 RAG 检索。设为 false 时只调用模型，不注入知识库上下文。' },
+            rag: { type: 'boolean', default: config.ragEnabled, description: '是否启用 RAG 检索。设为 false 时只调用模型，不注入知识库上下文。' },
             fileId: { type: 'string', description: '可选，限定只检索某个已上传文件。' },
             topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK, description: '可选，覆盖本次 RAG 返回数量。' },
             minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore, description: '可选，覆盖本次 RAG 最低综合分数。' },
@@ -234,7 +234,9 @@ async function buildRagContext(body: ChatRequestBody): Promise<{
     prompt: string
     results: SearchResult[]
 }> {
-    if (body.rag === false) {
+    const enabled = body.rag ?? config.ragEnabled
+
+    if (!enabled) {
         return { enabled: false, prompt: '', results: [] }
     }
 
