@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>&#36816;&#34892;&#32479;&#35745;&#38754;&#26495;</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;color:#333;padding:20px}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px}
+.header h1{font-size:20px;font-weight:600}
+.controls{display:flex;gap:8px;align-items:center}
+.controls button,.controls select{padding:6px 12px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer;font-size:13px}
+.controls button:hover{background:#f0f0f0}
+.controls button.active{background:#4f46e5;color:#fff;border-color:#4f46e5}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}
+.card{background:#fff;border-radius:8px;padding:16px;border:1px solid #e5e7eb}
+.card .label{font-size:12px;color:#6b7280;margin-bottom:4px}
+.card .value{font-size:24px;font-weight:700}
+.card .value.error{color:#dc2626}
+.section{background:#fff;border-radius:8px;padding:16px;border:1px solid #e5e7eb;margin-bottom:16px}
+.section h2{font-size:15px;font-weight:600;margin-bottom:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:8px 10px;border-bottom:2px solid #e5e7eb;color:#6b7280;font-weight:500;white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid #f3f4f6}
+tr:hover td{background:#f9fafb}
+.status{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500}
+.status.success{background:#d1fae5;color:#065f46}
+.status.failed{background:#fee2e2;color:#991b1b}
+.status.stream_error{background:#fef3c7;color:#92400e}
+.status.client_aborted{background:#e5e7eb;color:#374151}
+.provider-tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500}
+.provider-tag.openai{background:#d1fae5;color:#065f46}
+.provider-tag.anthropic{background:#fed7aa;color:#9a3412}
+.provider-tag.ollama{background:#dbeafe;color:#1e40af}
+.chart-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.chart-container{background:#fff;border-radius:8px;padding:16px;border:1px solid #e5e7eb;min-height:300px}
+.chart-container h3{font-size:14px;font-weight:600;margin-bottom:10px}
+canvas{max-height:250px}
+.pagination{display:flex;justify-content:center;gap:8px;margin-top:12px;align-items:center}
+.pagination button{padding:5px 12px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer}
+.pagination button:disabled{opacity:0.5;cursor:default}
+.pagination span{font-size:13px;color:#6b7280}
+.empty{text-align:center;padding:28px;color:#6b7280;font-size:13px}
+.cost{font-family:monospace}
+.error-list .error-item{padding:8px 10px;border-bottom:1px solid #f3f4f6;display:flex;gap:12px;align-items:center;font-size:13px}
+.error-list .error-item .time{color:#6b7280;white-space:nowrap;min-width:140px}
+.error-list .error-item .msg{flex:1;color:#dc2626}
+.api-key-prompt{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000}
+.api-key-prompt .dialog{background:#fff;border-radius:12px;padding:24px;max-width:400px;width:90%}
+.api-key-prompt input{width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:6px;margin:10px 0;font-size:14px}
+.api-key-prompt button{padding:8px 20px;background:#4f46e5;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px}
+@media(max-width:768px){.chart-row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div id="apiKeyPrompt" class="api-key-prompt" style="display:none">
+  <div class="dialog">
+    <h3 style="margin-bottom:8px">&#38656;&#35201; API Key</h3>
+    <p style="font-size:13px;color:#6b7280;margin-bottom:10px">&#35831;&#36755;&#20837;&#21518;&#31471; API Key &#20197;&#26597;&#30475;&#36816;&#34892;&#32479;&#35745;&#12290;</p>
+    <input id="apiKeyInput" type="password" placeholder="API Key" onkeydown="if(event.key==='Enter')saveApiKey()">
+    <div style="text-align:right;margin-top:10px">
+      <button onclick="saveApiKey()">&#36830;&#25509;</button>
+    </div>
+  </div>
+</div>
+
+<div class="header">
+  <h1>&#36816;&#34892;&#32479;&#35745;</h1>
+  <div class="controls">
+    <select id="timeRange" onchange="loadAll()">
+      <option value="1d">&#26368;&#36817; 24 &#23567;&#26102;</option>
+      <option value="7d" selected>&#26368;&#36817; 7 &#22825;</option>
+      <option value="30d">&#26368;&#36817; 30 &#22825;</option>
+      <option value="all">&#20840;&#37096;&#26102;&#38388;</option>
+    </select>
+    <button id="refreshBtn" onclick="loadAll()">&#21047;&#26032;</button>
+    <button id="autoRefreshBtn" onclick="toggleAutoRefresh()">&#33258;&#21160;&#21047;&#26032;&#65306;&#20851;</button>
+  </div>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="label">&#24635;&#35831;&#27714;&#25968;</div><div class="value" id="totalRequests">-</div></div>
+  <div class="card"><div class="label">&#38169;&#35823;&#29575;</div><div class="value error" id="errorRate">-</div></div>
+  <div class="card"><div class="label">&#24179;&#22343;&#24310;&#36831;</div><div class="value" id="avgLatency">-</div></div>
+  <div class="card"><div class="label">P95 &#24310;&#36831;</div><div class="value" id="p95Latency">-</div></div>
+  <div class="card"><div class="label">&#20272;&#31639; Token</div><div class="value" id="totalTokens">-</div></div>
+  <div class="card"><div class="label">&#20272;&#31639;&#25104;&#26412;</div><div class="value cost" id="totalCost">-</div></div>
+</div>
+
+<div class="chart-row">
+  <div class="chart-container">
+    <h3>&#21378;&#21830;&#20998;&#24067;</h3>
+    <canvas id="providerChart"></canvas>
+    <div class="empty" id="providerChartEmpty" style="display:none">&#26242;&#26080;&#21378;&#21830;&#25968;&#25454;</div>
+  </div>
+  <div class="chart-container">
+    <h3>&#21508;&#21378;&#21830;&#24310;&#36831;</h3>
+    <canvas id="latencyChart"></canvas>
+    <div class="empty" id="latencyChartEmpty" style="display:none">&#26242;&#26080;&#24310;&#36831;&#25968;&#25454;</div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>&#21378;&#21830; / &#27169;&#22411;&#26126;&#32454;</h2>
+  <table>
+    <thead><tr><th>Provider</th><th>Model</th><th>Requests</th><th>Success</th><th>&#24179;&#22343;&#24310;&#36831;</th><th>P95 &#24310;&#36831;</th><th>Tokens</th><th>Cost</th></tr></thead>
+    <tbody id="providerTable"></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>&#26368;&#36817;&#38169;&#35823;</h2>
+  <div class="error-list" id="errorList"><div class="empty">&#21152;&#36733;&#20013;...</div></div>
+</div>
+
+<div class="section">
+  <h2>&#26368;&#36817;&#35831;&#27714;</h2>
+  <table>
+    <thead><tr><th>&#26102;&#38388;</th><th>&#21378;&#21830;</th><th>&#27169;&#22411;</th><th>&#29366;&#24577;</th><th>&#24310;&#36831;</th><th>Token</th><th>&#25104;&#26412;</th></tr></thead>
+    <tbody id="requestTable"></tbody>
+  </table>
+  <div class="pagination">
+    <button id="prevBtn" onclick="changePage(-1)" disabled>&#19978;&#19968;&#39029;</button>
+    <span id="pageInfo">-</span>
+    <button id="nextBtn" onclick="changePage(1)">&#19979;&#19968;&#39029;</button>
+  </div>
+</div>
+
+<script>
+const API_BASE = '/api/metrics'
+const PAGE_SIZE = 30
+let autoRefreshTimer = null
+let currentPage = 0
+let providerChartInstance = null
+let latencyChartInstance = null
+
+function getApiKey() { return sessionStorage.getItem('api_key') || '' }
+
+function headers() {
+  const key = getApiKey()
+  return key ? { 'X-Api-Key': key } : {}
+}
+
+function saveApiKey() {
+  const key = document.getElementById('apiKeyInput').value.trim()
+  if (!key) return
+  sessionStorage.setItem('api_key', key)
+  document.getElementById('apiKeyPrompt').style.display = 'none'
+  loadAll()
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url, { headers: headers() })
+  if (res.status === 401) {
+    document.getElementById('apiKeyPrompt').style.display = 'flex'
+    return null
+  }
+  if (!res.ok) return null
+  return res.json()
+}
+
+function getTimeRange() {
+  const selected = document.getElementById('timeRange').value
+  if (selected === 'all') return {}
+  const days = selected === '1d' ? 1 : selected === '7d' ? 7 : 30
+  const now = new Date()
+  return {
+    from: new Date(now.getTime() - days * 86400000).toISOString(),
+    to: now.toISOString(),
+  }
+}
+
+function formatMs(ms) {
+  if (ms == null) return '-'
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
+}
+
+function formatCost(value) {
+  if (value == null) return '-'
+  return value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(2)}`
+}
+
+function formatTokens(value) {
+  if (value == null || value === 0) return '-'
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`
+  return String(value)
+}
+
+function providerClass(provider) {
+  if (provider === 'openai') return 'openai'
+  if (provider === 'anthropic') return 'anthropic'
+  return 'ollama'
+}
+
+function statusClass(status) {
+  return status || 'unknown'
+}
+
+function statusLabel(status) {
+  const labels = {
+    success: '&#25104;&#21151;',
+    failed: '&#22833;&#36133;',
+    stream_error: '&#27969;&#24335;&#38169;&#35823;',
+    client_aborted: '&#23458;&#25143;&#31471;&#20013;&#26029;',
+  }
+  return labels[status] || status || '-'
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function formatTime(timestamp) {
+  if (!timestamp) return '-'
+  return new Date(timestamp).toLocaleString()
+}
+
+async function loadSummary() {
+  const params = new URLSearchParams(getTimeRange())
+  const data = await fetchJson(`${API_BASE}/summary?${params}`)
+  if (!data) return
+
+  document.getElementById('totalRequests').textContent = data.totalRequests.toLocaleString()
+  document.getElementById('errorRate').textContent = data.totalRequests > 0 ? `${(data.errorRate * 100).toFixed(1)}%` : '-'
+  document.getElementById('avgLatency').textContent = formatMs(data.avgLatencyMs)
+  document.getElementById('p95Latency').textContent = formatMs(data.p95LatencyMs)
+  document.getElementById('totalTokens').textContent = formatTokens(data.totalEstTokens)
+  document.getElementById('totalCost').textContent = formatCost(data.totalEstCostUsd)
+}
+
+async function loadProviders() {
+  const params = new URLSearchParams(getTimeRange())
+  const data = await fetchJson(`${API_BASE}/providers?${params}`)
+  if (!data) return
+
+  const providers = data.providers || []
+  document.getElementById('providerTable').innerHTML = providers.length
+    ? providers.map(provider => `
+      <tr>
+        <td><span class="provider-tag ${providerClass(provider.provider)}">${escapeHtml(provider.provider)}</span></td>
+        <td>${escapeHtml(provider.model)}</td>
+        <td>${provider.totalRequests}</td>
+        <td>${(provider.successRate * 100).toFixed(1)}%</td>
+        <td>${formatMs(provider.avgLatencyMs)}</td>
+        <td>${formatMs(provider.p95LatencyMs)}</td>
+        <td>${formatTokens(provider.totalEstTokens)}</td>
+        <td class="cost">${formatCost(provider.totalEstCostUsd)}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="8" class="empty">&#26242;&#26080;&#21378;&#21830;&#25968;&#25454;</td></tr>'
+
+  renderProviderChart(providers)
+  renderLatencyChart(providers)
+}
+
+function setChartEmpty(canvasId, emptyId, isEmpty) {
+  document.getElementById(canvasId).style.display = isEmpty ? 'none' : 'block'
+  document.getElementById(emptyId).style.display = isEmpty ? 'block' : 'none'
+}
+
+function renderProviderChart(providers) {
+  const grouped = {}
+  for (const provider of providers) grouped[provider.provider] = (grouped[provider.provider] || 0) + provider.totalRequests
+  const labels = Object.keys(grouped)
+  const values = Object.values(grouped)
+  const isEmpty = labels.length === 0
+  setChartEmpty('providerChart', 'providerChartEmpty', isEmpty)
+  if (providerChartInstance) providerChartInstance.destroy()
+  if (isEmpty || typeof Chart === 'undefined') return
+
+  const colors = labels.map(label => label === 'openai' ? '#059669' : label === 'anthropic' ? '#ea580c' : '#3b82f6')
+  providerChartInstance = new Chart(document.getElementById('providerChart'), {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
+    options: { responsive: true, plugins: { legend: { position: 'bottom' } } },
+  })
+}
+
+function renderLatencyChart(providers) {
+  const isEmpty = providers.length === 0
+  setChartEmpty('latencyChart', 'latencyChartEmpty', isEmpty)
+  if (latencyChartInstance) latencyChartInstance.destroy()
+  if (isEmpty || typeof Chart === 'undefined') return
+
+  latencyChartInstance = new Chart(document.getElementById('latencyChart'), {
+    type: 'bar',
+    data: {
+      labels: providers.map(provider => `${provider.provider}/${provider.model}`),
+      datasets: [
+        { label: '&#24179;&#22343; (ms)', data: providers.map(provider => provider.avgLatencyMs || 0), backgroundColor: '#6366f1' },
+        { label: 'P95 (ms)', data: providers.map(provider => provider.p95LatencyMs || 0), backgroundColor: '#f59e0b' },
+      ],
+    },
+    options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true } } },
+  })
+}
+
+async function loadErrors() {
+  const failed = await fetchJson(`${API_BASE}/requests?limit=10&status=failed`)
+  const streamErrors = await fetchJson(`${API_BASE}/requests?limit=10&status=stream_error`)
+  const rows = [...(failed?.rows || []), ...(streamErrors?.rows || [])]
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    .slice(0, 10)
+  renderErrors(rows)
+}
+
+function renderErrors(rows) {
+  const container = document.getElementById('errorList')
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty">&#26242;&#26080;&#38169;&#35823;&#35760;&#24405;</div>'
+    return
+  }
+
+  container.innerHTML = rows.map(row => `
+    <div class="error-item">
+      <span class="time">${formatTime(row.timestamp)}</span>
+      <span class="provider-tag ${providerClass(row.provider)}">${escapeHtml(row.provider)}</span>
+      <span>${escapeHtml(row.model)}</span>
+      <span class="status ${statusClass(row.status)}">${statusLabel(row.status)}</span>
+      <span class="msg">${escapeHtml(row.error_message || row.error_code || '-')}</span>
+      <span>${formatMs(row.latency_ms)}</span>
+    </div>
+    ${row.raw_error ? `<div class="error-item" style="padding-top:0;font-size:12px;color:#6b7280"><span class="time"></span><span class="msg" style="color:#92400e;word-break:break-all">&#21407;&#22987;&#38169;&#35823;&#65306; ${escapeHtml(row.raw_error)}</span></div>` : ''}
+  `).join('')
+}
+
+async function loadRequests() {
+  const params = new URLSearchParams({ ...getTimeRange(), limit: PAGE_SIZE, offset: currentPage * PAGE_SIZE })
+  const data = await fetchJson(`${API_BASE}/requests?${params}`)
+  if (!data) return
+
+  document.getElementById('requestTable').innerHTML = (data.rows || []).length
+    ? data.rows.map(row => `
+      <tr>
+        <td>${formatTime(row.timestamp)}</td>
+        <td><span class="provider-tag ${providerClass(row.provider)}">${escapeHtml(row.provider)}</span></td>
+        <td>${escapeHtml(row.model)}</td>
+        <td><span class="status ${statusClass(row.status)}">${statusLabel(row.status)}</span></td>
+        <td>${formatMs(row.latency_ms)}</td>
+        <td>${formatTokens((row.est_input_tokens || 0) + (row.est_output_tokens || 0))}</td>
+        <td class="cost">${formatCost(row.est_cost_usd)}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="7" class="empty">&#26242;&#26080;&#35831;&#27714;&#35760;&#24405;</td></tr>'
+
+  const totalPages = Math.ceil(data.total / PAGE_SIZE)
+  document.getElementById('pageInfo').textContent = `&#31532; ${currentPage + 1} &#39029; / &#20849; ${totalPages || 1} &#39029;`
+  document.getElementById('prevBtn').disabled = currentPage <= 0
+  document.getElementById('nextBtn').disabled = currentPage >= totalPages - 1
+}
+
+function changePage(delta) {
+  currentPage = Math.max(0, currentPage + delta)
+  loadRequests()
+}
+
+function toggleAutoRefresh() {
+  const button = document.getElementById('autoRefreshBtn')
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer)
+    autoRefreshTimer = null
+    button.textContent = '&#33258;&#21160;&#21047;&#26032;&#65306;&#20851;'
+    button.classList.remove('active')
+    return
+  }
+
+  autoRefreshTimer = setInterval(loadAll, 10000)
+  button.textContent = '&#33258;&#21160;&#21047;&#26032;&#65306;&#24320;'
+  button.classList.add('active')
+}
+
+async function loadAll() {
+  await Promise.all([loadSummary(), loadProviders(), loadErrors(), loadRequests()])
+}
+
+if (!getApiKey()) {
+  fetchJson(`${API_BASE}/summary`).then(data => { if (data) loadAll() })
+} else {
+  loadAll()
+}
+</script>
+</body>
+</html>

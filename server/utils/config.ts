@@ -54,4 +54,5 @@ export const config = {
     embeddingBatchSize: Math.max(1, Math.floor(numberFromEnv('EMBEDDING_BATCH_SIZE', 16))),
     ollamaTimeoutMs: Math.max(1000, numberFromEnv('OLLAMA_TIMEOUT_MS', 120000)),
     vectorStorePath: process.env.VECTOR_STORE_PATH || 'server/data/vector-store.sqlite',
+    metricsRetentionDays: numberFromEnv('METRICS_RETENTION_DAYS', 30),
 }

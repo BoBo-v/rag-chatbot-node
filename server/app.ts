@@ -6,9 +6,11 @@ import swaggerUi from '@fastify/swagger-ui'
 import { chatRoutes } from './router/chat'
 import { systemRoutes } from './router/system'
 import { uploadRoutes } from './router/upload'
+import { metricsRoutes } from './router/metrics'
 import { config } from './utils/config'
 import { registerSchemas } from './utils/schemas'
-import { closeVectorStore } from './utils/vectorStore'
+import { closeVectorStore, setDbReadyCallback } from './utils/vectorStore'
+import { startMetricsCollector, stopMetricsCollector } from './utils/metricsCollector'
 import { AppError, toErrorResponse } from './utils/errors'
 
 export function buildApp(options: { logger?: boolean } = {}) {
@@ -76,19 +78,26 @@ export function buildApp(options: { logger?: boolean } = {}) {
         return reply.send({ error: '未授权，请提供正确的 x-api-key 或 Authorization Bearer Token。', code: 'UNAUTHORIZED' })
     })
     app.addHook('onClose', async () => {
+        stopMetricsCollector()
         closeVectorStore()
     })
     app.register(systemRoutes)
     app.register(uploadRoutes)
     app.register(chatRoutes)
+    app.register(metricsRoutes)
 
     app.register(swaggerUi, {
         routePrefix: '/docs',
+    })
+
+    // Start metrics collector when DB is first accessed
+    setDbReadyCallback((database) => {
+        startMetricsCollector(database)
     })
 
     return app
 }
 
 function isPublicRoute(url: string): boolean {
-    return url === '/api/health' || url.startsWith('/docs') || url.startsWith('/api/upload/progress/')
+    return url === '/api/health' || url.startsWith('/docs') || url.startsWith('/api/upload/progress/') || url === '/api/metrics/dashboard'
 }
