@@ -31,15 +31,15 @@ export async function chatRoutes(app: FastifyInstance) {
     app.post('/api/chat/context', {
         schema: {
             tags: ['Chat'],
-            summary: 'Preview RAG context',
-            description: 'Runs the same RAG retrieval used by /api/chat without calling the model provider.',
+            summary: '调试对话 RAG 上下文',
+            description: '只执行与 /api/chat 相同的 RAG 检索，不调用 Ollama，用于检查将要注入的引用上下文。',
             body: chatRequestBodySchema(),
             response: {
                 200: {
                     type: 'object',
                     properties: {
-                        enabled: { type: 'boolean', description: 'Whether RAG was enabled for this request.' },
-                        prompt: { type: 'string', description: 'The system prompt that would be injected into chat.' },
+                        enabled: { type: 'boolean', description: '本次是否启用 RAG' },
+                        prompt: { type: 'string', description: '将要注入的 system prompt。未命中时为空字符串。' },
                         results: {
                             type: 'array',
                             items: { $ref: 'SearchResult#' },
@@ -68,15 +68,15 @@ export async function chatRoutes(app: FastifyInstance) {
         } catch (err) {
             request.log.error(err)
             reply.status(502)
-            return reply.send({ error: 'RAG context retrieval failed. Check embedding service and vector store status.', code: 'RAG_CONTEXT_FAILED' })
+            return reply.send({ error: 'RAG 上下文检索失败，请确认 Ollama embedding 服务和向量库状态正常。', code: 'RAG_CONTEXT_FAILED' })
         }
     })
 
     app.post('/api/chat', {
         schema: {
             tags: ['Chat'],
-            summary: 'RAG chat',
-            description: 'Streams a chat response from the selected provider, optionally injecting RAG context.',
+            summary: 'RAG 对话',
+            description: '根据最后一条用户消息检索相关知识库片段，注入 system 上下文后调用选定模型厂商。默认行为由 RAG_ENABLED 控制，可通过 rag=true/false 单次覆盖。',
             body: chatRequestBodySchema(),
             response: {
                 400: { $ref: 'ErrorResponse#' },
@@ -263,8 +263,8 @@ export async function chatRoutes(app: FastifyInstance) {
     app.get('/api/providers', {
         schema: {
             tags: ['Chat'],
-            summary: 'List chat providers',
-            description: 'Returns supported model providers and their default model/configured status.',
+            summary: '查询可用模型厂商',
+            description: '返回后端支持的模型厂商及默认模型。OpenAI 和 Claude 只有配置 API Key 后才标记为可用。',
             response: {
                 200: {
                     type: 'object',
@@ -274,10 +274,10 @@ export async function chatRoutes(app: FastifyInstance) {
                             items: {
                                 type: 'object',
                                 properties: {
-                                    id: { type: 'string', description: 'Provider id.' },
-                                    name: { type: 'string', description: 'Provider display name.' },
-                                    defaultModel: { type: 'string', description: 'Default model.' },
-                                    configured: { type: 'boolean', description: 'Whether this provider is configured.' },
+                                    id: { type: 'string', description: '厂商 ID，例如 ollama、openai、anthropic' },
+                                    name: { type: 'string', description: '厂商名称' },
+                                    defaultModel: { type: 'string', description: '默认模型' },
+                                    configured: { type: 'boolean', description: '是否已经配置可用' },
                                 },
                             },
                         },
@@ -292,8 +292,8 @@ export async function chatRoutes(app: FastifyInstance) {
     app.get('/api/tags', {
         schema: {
             tags: ['Ollama'],
-            summary: 'List Ollama models',
-            description: 'Proxies Ollama /api/tags.',
+            summary: '查询 Ollama 模型列表',
+            description: '代理调用 Ollama 的 /api/tags 接口，返回本地可用模型。',
             response: {
                 400: { $ref: 'ErrorResponse#' },
                 502: { $ref: 'ErrorResponse#' },
@@ -309,7 +309,7 @@ export async function chatRoutes(app: FastifyInstance) {
                 const errText = await response.text()
                 reply.raw.statusCode = response.status
                 return reply.send({
-                    error: errText || 'Ollama returned an error while listing models.',
+                    error: errText || 'Ollama 返回错误，请检查 Ollama 服务状态。',
                     code: 'OLLAMA_TAGS_FAILED',
                 })
             }
@@ -318,7 +318,7 @@ export async function chatRoutes(app: FastifyInstance) {
         } catch (err) {
             request.log.error(err)
             reply.status(502)
-            return reply.send({ error: 'Unable to connect to Ollama service.', code: 'OLLAMA_SERVICE_UNAVAILABLE' })
+            return reply.send({ error: '无法连接 Ollama 服务，请确认 Ollama 已启动。', code: 'OLLAMA_SERVICE_UNAVAILABLE' })
         }
     })
 }
@@ -342,23 +342,23 @@ function chatRequestBodySchema() {
                 type: 'string',
                 enum: ['ollama', 'openai', 'anthropic'],
                 default: 'ollama',
-                description: 'Model provider.',
+                description: '模型厂商。默认 ollama，可选 openai 或 anthropic。',
             },
-            model: { type: 'string', description: 'Optional model name. Defaults to the selected provider default.' },
-            rag: { type: 'boolean', default: config.ragEnabled, description: 'Whether to enable RAG retrieval.' },
-            fileId: { type: 'string', description: 'Optional file id filter for RAG retrieval.' },
-            topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK, description: 'RAG topK override.' },
-            minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore, description: 'RAG minimum score override.' },
-            compareId: { type: 'string', description: 'Optional group id for model comparison metrics.' },
+            model: { type: 'string', default: config.defaultModel, description: '可选，模型名称。不传时使用所选厂商默认模型。' },
+            rag: { type: 'boolean', default: config.ragEnabled, description: '是否启用 RAG 检索。设为 false 时只调用模型，不注入知识库上下文。' },
+            fileId: { type: 'string', description: '可选，限定只检索某个已上传文件。' },
+            topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK, description: '可选，覆盖本次 RAG 返回数量。' },
+            minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore, description: '可选，覆盖本次 RAG 最低综合分数。' },
+            compareId: { type: 'string', description: '可选，一次用户对比的分组 ID，多个模型请求可共享同一 compareId 用于统计汇总。' },
             messages: {
                 type: 'array',
-                description: 'Chat messages.',
+                description: '对话消息列表',
                 items: {
                     type: 'object',
                     required: ['role', 'content'],
                     properties: {
-                        role: { type: 'string', description: 'Message role.' },
-                        content: { type: 'string', description: 'Message content.' },
+                        role: { type: 'string', description: '消息角色，例如 user、assistant、system' },
+                        content: { type: 'string', description: '消息内容' },
                     },
                 },
             },
@@ -368,12 +368,12 @@ function chatRequestBodySchema() {
 
 function validateChatBody(body: ChatRequestBody): string | null {
     if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
-        return 'messages must not be empty'
+        return 'messages 不能为空'
     }
 
     const lastMessage = body.messages[body.messages.length - 1]
     if (!lastMessage?.content || typeof lastMessage.content !== 'string') {
-        return 'last message content must not be empty'
+        return '最后一条消息 content 不能为空'
     }
 
     return null
@@ -437,11 +437,11 @@ function buildRagSystemPrompt(chunks: SearchResult[]): string {
         .join('\n---\n')
 
     return [
-        'You are an assistant that answers using the provided knowledge-base context.',
-        'Prefer the cited context. If the context is insufficient, say that the knowledge base does not contain enough information to confirm the answer.',
-        'When using context, cite the source filename and chunk number, for example [test.pdf chunk 2].',
-        'Do not invent facts, numbers, conclusions, or sources that are not in the provided context.',
-        'If the context is unrelated, say that no sufficiently relevant knowledge-base content was retrieved.',
+        '你是一个基于知识库回答问题的助手。',
+        '请优先使用下面的引用材料回答用户问题；如果引用材料不足以支持答案，必须明确说明"知识库资料不足，无法确认"。',
+        '使用引用材料时，必须标注来源文件名和 chunk 编号，例如：[test.pdf chunk 2]。',
+        '不要编造引用材料中不存在的事实、数字、结论或来源。',
+        '如果引用材料与问题无关，请直接说明没有检索到足够相关的知识库内容。',
         '',
         '\u5f15\u7528\u6750\u6599:',
         context,
@@ -452,16 +452,16 @@ function classifyChatProviderError(err: unknown): AppError {
     const message = err instanceof Error ? err.message : ''
 
     if (message.includes('OPENAI_API_KEY is not configured')) {
-        return new AppError(400, 'OPENAI_NOT_CONFIGURED', 'OpenAI is not configured. Set OPENAI_API_KEY on the backend.')
+        return new AppError(400, 'OPENAI_NOT_CONFIGURED', 'OpenAI 未配置，请先在后端 .env 设置 OPENAI_API_KEY。')
     }
 
     if (message.includes('ANTHROPIC_API_KEY is not configured')) {
-        return new AppError(400, 'ANTHROPIC_NOT_CONFIGURED', 'Anthropic is not configured. Set ANTHROPIC_API_KEY on the backend.')
+        return new AppError(400, 'ANTHROPIC_NOT_CONFIGURED', 'Claude 未配置，请先在后端 .env 设置 ANTHROPIC_API_KEY。')
     }
 
     if (message.includes('fetch failed') || message.includes('aborted') || message.includes('Failed to fetch')) {
-        return new AppError(502, 'MODEL_PROVIDER_UNAVAILABLE', 'Model provider request failed. Check provider config, network, or local Ollama status.')
+        return new AppError(502, 'MODEL_PROVIDER_UNAVAILABLE', '模型厂商服务调用失败，请检查厂商配置、网络连接或本地 Ollama 状态。')
     }
 
-    return new AppError(502, 'MODEL_PROVIDER_FAILED', 'Model provider returned an error. Check backend logs for upstream details.')
+    return new AppError(502, 'MODEL_PROVIDER_FAILED', '模型厂商返回错误，请查看后端日志中的上游错误详情。')
 }
