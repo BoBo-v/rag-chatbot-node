@@ -12,9 +12,11 @@ import { registerSchemas } from './utils/schemas'
 import { closeVectorStore, setDbReadyCallback } from './utils/vectorStore'
 import { startMetricsCollector, stopMetricsCollector } from './utils/metricsCollector'
 import { AppError, toErrorResponse } from './utils/errors'
+import { recordHttpAccessLog } from './utils/httpAccessLog'
 
 export function buildApp(options: { logger?: boolean } = {}) {
     const app = Fastify({ logger: options.logger ?? true })
+    const requestStartedAt = new WeakMap<object, number>()
 
     app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } })
     app.register(cors, {
@@ -63,6 +65,23 @@ export function buildApp(options: { logger?: boolean } = {}) {
     app.setNotFoundHandler((request, reply) => {
         reply.status(404)
         return reply.send({ error: '接口不存在，请检查请求路径和方法。', code: 'NOT_FOUND' })
+    })
+    app.addHook('onRequest', async (request) => {
+        requestStartedAt.set(request, performance.now())
+    })
+    app.addHook('onResponse', async (request, reply) => {
+        const startedAt = requestStartedAt.get(request) ?? performance.now()
+        recordHttpAccessLog({
+            id: request.id,
+            timestamp: new Date().toISOString(),
+            method: request.method,
+            url: request.url,
+            host: request.headers.host ?? null,
+            remoteAddress: request.ip ?? null,
+            statusCode: reply.statusCode,
+            responseTimeMs: Math.round((performance.now() - startedAt) * 10) / 10,
+        })
+        requestStartedAt.delete(request)
     })
     app.addHook('preHandler', async (request, reply) => {
         if (!config.apiKey || isPublicRoute(request.url)) return

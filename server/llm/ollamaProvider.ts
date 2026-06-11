@@ -20,6 +20,7 @@ export const ollamaProvider: ChatProviderClient = {
                 model: input.model || config.defaultModel,
                 messages: input.messages,
                 stream: true,
+                think: false,
             }),
         }, config.ollamaTimeoutMs)
 
@@ -60,8 +61,14 @@ export function ollamaNdjsonToUnifiedStream(body: ReadableStream<Uint8Array>): R
                         const parsed = JSON.parse(line) as {
                             message?: { content?: string }
                             done?: boolean
+                            error?: string
                         }
 
+                        if (parsed.error) {
+                            controller.enqueue(chatErrorLine(parsed.error))
+                            sendDone(controller)
+                            continue
+                        }
                         const delta = parsed.message?.content
                         if (delta) controller.enqueue(chatTextLine(delta))
                         if (parsed.done) sendDone(controller)
@@ -69,7 +76,11 @@ export function ollamaNdjsonToUnifiedStream(body: ReadableStream<Uint8Array>): R
                 }
 
                 if (buffer.trim()) {
-                    const parsed = JSON.parse(buffer) as { message?: { content?: string }; done?: boolean }
+                    const parsed = JSON.parse(buffer) as { message?: { content?: string }; done?: boolean; error?: string }
+                    if (parsed.error) {
+                        controller.enqueue(chatErrorLine(parsed.error))
+                        sendDone(controller)
+                    }
                     if (parsed.message?.content) controller.enqueue(chatTextLine(parsed.message.content))
                     if (parsed.done) sendDone(controller)
                 }

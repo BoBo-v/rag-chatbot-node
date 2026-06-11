@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>&#36816;&#34892;&#32479;&#35745;&#38754;&#26495;</title>
+<title>运行统计面板</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -14,6 +14,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .controls button,.controls select{padding:6px 12px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer;font-size:13px}
 .controls button:hover{background:#f0f0f0}
 .controls button.active{background:#4f46e5;color:#fff;border-color:#4f46e5}
+.feedback-grid{display:grid;grid-template-columns:1.1fr 2fr;gap:12px;margin-bottom:16px}
+.feedback-panel{background:#fff;border-radius:8px;padding:12px 14px;border:1px solid #e5e7eb}
+.feedback-panel h2{font-size:14px;font-weight:600;margin-bottom:8px}
+.feedback-status{display:flex;align-items:center;gap:8px;font-size:13px;color:#374151;flex-wrap:wrap}
+.dot{width:8px;height:8px;border-radius:999px;background:#9ca3af;display:inline-block}
+.dot.ok{background:#10b981}.dot.loading{background:#f59e0b}.dot.error{background:#ef4444}
+.feedback-meta{font-size:12px;color:#6b7280;margin-top:6px;line-height:1.5}
+.call-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px}
+.call-item{border:1px solid #f0f1f3;border-radius:6px;padding:8px;background:#fafafa;font-size:12px;min-height:64px}
+.call-item .name{display:flex;justify-content:space-between;gap:8px;color:#374151;font-weight:600;margin-bottom:4px}
+.call-item .detail{color:#6b7280;line-height:1.45;word-break:break-word}
+.call-item.error{border-color:#fecaca;background:#fff7f7}
+.call-item.error .detail{color:#991b1b}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}
 .card{background:#fff;border-radius:8px;padding:16px;border:1px solid #e5e7eb}
 .card .label{font-size:12px;color:#6b7280;margin-bottom:4px}
@@ -47,84 +60,114 @@ canvas{max-height:250px}
 .error-list .error-item{padding:8px 10px;border-bottom:1px solid #f3f4f6;display:flex;gap:12px;align-items:center;font-size:13px}
 .error-list .error-item .time{color:#6b7280;white-space:nowrap;min-width:140px}
 .error-list .error-item .msg{flex:1;color:#dc2626}
+.request-detail{max-width:360px;color:#6b7280;font-size:12px;line-height:1.4;word-break:break-word}
+.request-detail strong{color:#374151;font-weight:500}
+.request-more{margin-top:4px}
+.request-more summary{cursor:pointer;color:#4f46e5}
+.request-more pre{white-space:pre-wrap;word-break:break-word;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:8px;margin-top:6px;max-height:180px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:#374151}
+.http-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+.http-code.ok{color:#047857}.http-code.error{color:#b91c1c}
 .api-key-prompt{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000}
 .api-key-prompt .dialog{background:#fff;border-radius:12px;padding:24px;max-width:400px;width:90%}
 .api-key-prompt input{width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:6px;margin:10px 0;font-size:14px}
 .api-key-prompt button{padding:8px 20px;background:#4f46e5;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px}
-@media(max-width:768px){.chart-row{grid-template-columns:1fr}}
+@media(max-width:768px){.chart-row,.feedback-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div id="apiKeyPrompt" class="api-key-prompt" style="display:none">
   <div class="dialog">
-    <h3 style="margin-bottom:8px">&#38656;&#35201; API Key</h3>
-    <p style="font-size:13px;color:#6b7280;margin-bottom:10px">&#35831;&#36755;&#20837;&#21518;&#31471; API Key &#20197;&#26597;&#30475;&#36816;&#34892;&#32479;&#35745;&#12290;</p>
+    <h3 style="margin-bottom:8px">需要 API Key</h3>
+    <p style="font-size:13px;color:#6b7280;margin-bottom:10px">请输入后端 API Key 以查看运行统计。</p>
     <input id="apiKeyInput" type="password" placeholder="API Key" onkeydown="if(event.key==='Enter')saveApiKey()">
     <div style="text-align:right;margin-top:10px">
-      <button onclick="saveApiKey()">&#36830;&#25509;</button>
+      <button onclick="saveApiKey()">连接</button>
     </div>
   </div>
 </div>
 
 <div class="header">
-  <h1>&#36816;&#34892;&#32479;&#35745;</h1>
+  <h1>运行统计</h1>
   <div class="controls">
     <select id="timeRange" onchange="loadAll()">
-      <option value="1d">&#26368;&#36817; 24 &#23567;&#26102;</option>
-      <option value="7d" selected>&#26368;&#36817; 7 &#22825;</option>
-      <option value="30d">&#26368;&#36817; 30 &#22825;</option>
-      <option value="all">&#20840;&#37096;&#26102;&#38388;</option>
+      <option value="1d">最近 24 小时</option>
+      <option value="7d" selected>最近 7 天</option>
+      <option value="30d">最近 30 天</option>
+      <option value="all">全部时间</option>
     </select>
-    <button id="refreshBtn" onclick="loadAll()">&#21047;&#26032;</button>
-    <button id="autoRefreshBtn" onclick="toggleAutoRefresh()">&#33258;&#21160;&#21047;&#26032;&#65306;&#20851;</button>
+    <button id="refreshBtn" onclick="loadAll()">刷新</button>
+    <button id="autoRefreshBtn" onclick="toggleAutoRefresh()">自动刷新：关</button>
+  </div>
+</div>
+
+<div class="feedback-grid">
+  <div class="feedback-panel">
+    <h2>接口调用状态</h2>
+    <div class="feedback-status">
+      <span id="globalStatusDot" class="dot"></span>
+      <span id="globalStatusText">等待加载</span>
+    </div>
+    <div class="feedback-meta" id="globalStatusMeta">-</div>
+  </div>
+  <div class="feedback-panel">
+    <h2>最近接口反馈</h2>
+    <div class="call-list" id="callFeedbackList"></div>
   </div>
 </div>
 
 <div class="cards">
-  <div class="card"><div class="label">&#24635;&#35831;&#27714;&#25968;</div><div class="value" id="totalRequests">-</div></div>
-  <div class="card"><div class="label">&#38169;&#35823;&#29575;</div><div class="value error" id="errorRate">-</div></div>
-  <div class="card"><div class="label">&#24179;&#22343;&#24310;&#36831;</div><div class="value" id="avgLatency">-</div></div>
-  <div class="card"><div class="label">P95 &#24310;&#36831;</div><div class="value" id="p95Latency">-</div></div>
-  <div class="card"><div class="label">&#20272;&#31639; Token</div><div class="value" id="totalTokens">-</div></div>
-  <div class="card"><div class="label">&#20272;&#31639;&#25104;&#26412;</div><div class="value cost" id="totalCost">-</div></div>
+  <div class="card"><div class="label">总请求数</div><div class="value" id="totalRequests">-</div></div>
+  <div class="card"><div class="label">错误率</div><div class="value error" id="errorRate">-</div></div>
+  <div class="card"><div class="label">平均延迟</div><div class="value" id="avgLatency">-</div></div>
+  <div class="card"><div class="label">P95 延迟</div><div class="value" id="p95Latency">-</div></div>
+  <div class="card"><div class="label">估算 Token</div><div class="value" id="totalTokens">-</div></div>
+  <div class="card"><div class="label">估算成本</div><div class="value cost" id="totalCost">-</div></div>
 </div>
 
 <div class="chart-row">
   <div class="chart-container">
-    <h3>&#21378;&#21830;&#20998;&#24067;</h3>
+    <h3>厂商分布</h3>
     <canvas id="providerChart"></canvas>
-    <div class="empty" id="providerChartEmpty" style="display:none">&#26242;&#26080;&#21378;&#21830;&#25968;&#25454;</div>
+    <div class="empty" id="providerChartEmpty" style="display:none">暂无厂商数据</div>
   </div>
   <div class="chart-container">
-    <h3>&#21508;&#21378;&#21830;&#24310;&#36831;</h3>
+    <h3>各厂商延迟</h3>
     <canvas id="latencyChart"></canvas>
-    <div class="empty" id="latencyChartEmpty" style="display:none">&#26242;&#26080;&#24310;&#36831;&#25968;&#25454;</div>
+    <div class="empty" id="latencyChartEmpty" style="display:none">暂无延迟数据</div>
   </div>
 </div>
 
 <div class="section">
-  <h2>&#21378;&#21830; / &#27169;&#22411;&#26126;&#32454;</h2>
+  <h2>厂商 / 模型明细</h2>
   <table>
-    <thead><tr><th>Provider</th><th>Model</th><th>Requests</th><th>Success</th><th>&#24179;&#22343;&#24310;&#36831;</th><th>P95 &#24310;&#36831;</th><th>Tokens</th><th>Cost</th></tr></thead>
+    <thead><tr><th>Provider</th><th>Model</th><th>Requests</th><th>Success</th><th>平均延迟</th><th>P95 延迟</th><th>Tokens</th><th>Cost</th></tr></thead>
     <tbody id="providerTable"></tbody>
   </table>
 </div>
 
 <div class="section">
-  <h2>&#26368;&#36817;&#38169;&#35823;</h2>
-  <div class="error-list" id="errorList"><div class="empty">&#21152;&#36733;&#20013;...</div></div>
+  <h2>最近错误</h2>
+  <div class="error-list" id="errorList"><div class="empty">加载中...</div></div>
 </div>
 
 <div class="section">
-  <h2>&#26368;&#36817;&#35831;&#27714;</h2>
+  <h2>最近 HTTP 请求</h2>
   <table>
-    <thead><tr><th>&#26102;&#38388;</th><th>&#21378;&#21830;</th><th>&#27169;&#22411;</th><th>&#29366;&#24577;</th><th>&#24310;&#36831;</th><th>Token</th><th>&#25104;&#26412;</th></tr></thead>
+    <thead><tr><th>时间</th><th>ReqId</th><th>Method</th><th>URL</th><th>Status</th><th>耗时</th><th>Host</th><th>IP</th></tr></thead>
+    <tbody id="httpLogTable"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>最近请求</h2>
+  <table>
+    <thead><tr><th>时间</th><th>厂商</th><th>模型</th><th>状态</th><th>延迟</th><th>Token</th><th>成本</th><th>问题 / 错误</th></tr></thead>
     <tbody id="requestTable"></tbody>
   </table>
   <div class="pagination">
-    <button id="prevBtn" onclick="changePage(-1)" disabled>&#19978;&#19968;&#39029;</button>
+    <button id="prevBtn" onclick="changePage(-1)" disabled>上一页</button>
     <span id="pageInfo">-</span>
-    <button id="nextBtn" onclick="changePage(1)">&#19979;&#19968;&#39029;</button>
+    <button id="nextBtn" onclick="changePage(1)">下一页</button>
   </div>
 </div>
 
@@ -135,6 +178,7 @@ let autoRefreshTimer = null
 let currentPage = 0
 let providerChartInstance = null
 let latencyChartInstance = null
+const callFeedback = {}
 
 function getApiKey() { return sessionStorage.getItem('api_key') || '' }
 
@@ -151,14 +195,103 @@ function saveApiKey() {
   loadAll()
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url, { headers: headers() })
-  if (res.status === 401) {
-    document.getElementById('apiKeyPrompt').style.display = 'flex'
+function setGlobalStatus(type, text, meta) {
+  const dot = document.getElementById('globalStatusDot')
+  dot.className = `dot ${type || ''}`.trim()
+  document.getElementById('globalStatusText').textContent = text
+  document.getElementById('globalStatusMeta').textContent = meta || '-'
+}
+
+function updateCallFeedback(name, patch) {
+  callFeedback[name] = {
+    name,
+    state: 'idle',
+    status: null,
+    durationMs: null,
+    message: '',
+    updatedAt: null,
+    ...callFeedback[name],
+    ...patch,
+  }
+  renderCallFeedback()
+}
+
+function renderCallFeedback() {
+  const container = document.getElementById('callFeedbackList')
+  const items = Object.values(callFeedback)
+  if (!items.length) {
+    container.innerHTML = '<div class="empty">暂无接口调用</div>'
+    return
+  }
+
+  container.innerHTML = items.map(item => {
+    const stateLabel = item.state === 'loading' ? '请求中' : item.state === 'error' ? '失败' : '成功'
+    const status = item.status ? `HTTP ${item.status}` : '-'
+    const duration = item.durationMs == null ? '-' : `${item.durationMs}ms`
+    const updatedAt = item.updatedAt ? formatTime(item.updatedAt) : '-'
+    return `
+      <div class="call-item ${item.state === 'error' ? 'error' : ''}">
+        <div class="name"><span>${escapeHtml(item.name)}</span><span>${stateLabel}</span></div>
+        <div class="detail">${status} / ${duration}</div>
+        <div class="detail">${escapeHtml(item.message || updatedAt)}</div>
+      </div>
+    `
+  }).join('')
+}
+
+function summarizeResponse(data) {
+  if (!data || typeof data !== 'object') return '\u8c03\u7528\u6b63\u5e38'
+  const parts = []
+  if (Array.isArray(data.rows)) parts.push(`rows=${data.rows.length}`)
+  if (typeof data.total === 'number') parts.push(`total=${data.total}`)
+  if (Array.isArray(data.providers)) parts.push(`providers=${data.providers.length}`)
+  if (Array.isArray(data.models)) parts.push(`models=${data.models.length}`)
+  if (typeof data.totalRequests === 'number') parts.push(`totalRequests=${data.totalRequests}`)
+  if (typeof data.errorRate === 'number') parts.push(`errorRate=${(data.errorRate * 100).toFixed(1)}%`)
+  if (typeof data.status === 'string') parts.push(`status=${data.status}`)
+  return parts.length ? parts.join(', ') : '\u8c03\u7528\u6b63\u5e38'
+}
+
+async function fetchJson(url, label) {
+  const startedAt = performance.now()
+  updateCallFeedback(label, { state: 'loading', message: '\u8bf7\u6c42\u4e2d...', updatedAt: new Date().toISOString() })
+  try {
+    const res = await fetch(url, { headers: headers() })
+    const durationMs = Math.round(performance.now() - startedAt)
+    const text = await res.text()
+    let data = null
+
+    if (text) {
+      try {
+        data = JSON.parse(text)
+      } catch {
+        data = null
+      }
+    }
+
+    if (res.status === 401) {
+      document.getElementById('apiKeyPrompt').style.display = 'flex'
+    }
+
+    if (!res.ok) {
+      const message = data?.error || data?.message || text || res.statusText || '\u63a5\u53e3\u8fd4\u56de\u9519\u8bef'
+      updateCallFeedback(label, { state: 'error', status: res.status, durationMs, message, updatedAt: new Date().toISOString() })
+      return null
+    }
+
+    updateCallFeedback(label, { state: 'ok', status: res.status, durationMs, message: summarizeResponse(data), updatedAt: new Date().toISOString() })
+    return data ?? {}
+  } catch (err) {
+    const durationMs = Math.round(performance.now() - startedAt)
+    updateCallFeedback(label, {
+      state: 'error',
+      status: null,
+      durationMs,
+      message: err instanceof Error ? err.message : String(err),
+      updatedAt: new Date().toISOString(),
+    })
     return null
   }
-  if (!res.ok) return null
-  return res.json()
 }
 
 function getTimeRange() {
@@ -201,10 +334,10 @@ function statusClass(status) {
 
 function statusLabel(status) {
   const labels = {
-    success: '&#25104;&#21151;',
-    failed: '&#22833;&#36133;',
-    stream_error: '&#27969;&#24335;&#38169;&#35823;',
-    client_aborted: '&#23458;&#25143;&#31471;&#20013;&#26029;',
+    success: '成功',
+    failed: '失败',
+    stream_error: '流式错误',
+    client_aborted: '客户端中断',
   }
   return labels[status] || status || '-'
 }
@@ -223,9 +356,35 @@ function formatTime(timestamp) {
   return new Date(timestamp).toLocaleString()
 }
 
+function compactError(row) {
+  return row.error_message || row.error_code || row.raw_error || (row.status !== 'success' ? row.status : '')
+}
+
+function formatRequestDetail(row) {
+  const parts = []
+  if (row.question_preview) parts.push(`<div><strong>问题</strong>：${escapeHtml(row.question_preview)}</div>`)
+  const error = compactError(row)
+  if (error) parts.push(`<div><strong>错误</strong>：${escapeHtml(error)}</div>`)
+  if (row.rag_enabled) parts.push(`<div><strong>RAG</strong>：${row.rag_hit_count || 0} hits / ${row.rag_prompt_chars || 0} chars</div>`)
+  if (row.is_timeout) parts.push('<div><strong>Timeout</strong>：yes</div>')
+  if (row.raw_error && row.raw_error !== error) {
+    parts.push(`
+      <details class="request-more">
+        <summary>原始错误</summary>
+        <pre>${escapeHtml(row.raw_error)}</pre>
+      </details>
+    `)
+  }
+  return parts.length ? parts.join('') : '-'
+}
+
+function statusCodeClass(statusCode) {
+  return statusCode >= 400 ? 'error' : 'ok'
+}
+
 async function loadSummary() {
   const params = new URLSearchParams(getTimeRange())
-  const data = await fetchJson(`${API_BASE}/summary?${params}`)
+  const data = await fetchJson(`${API_BASE}/summary?${params}`, 'summary')
   if (!data) return
 
   document.getElementById('totalRequests').textContent = data.totalRequests.toLocaleString()
@@ -238,7 +397,7 @@ async function loadSummary() {
 
 async function loadProviders() {
   const params = new URLSearchParams(getTimeRange())
-  const data = await fetchJson(`${API_BASE}/providers?${params}`)
+  const data = await fetchJson(`${API_BASE}/providers?${params}`, 'providers')
   if (!data) return
 
   const providers = data.providers || []
@@ -255,7 +414,7 @@ async function loadProviders() {
         <td class="cost">${formatCost(provider.totalEstCostUsd)}</td>
       </tr>
     `).join('')
-    : '<tr><td colspan="8" class="empty">&#26242;&#26080;&#21378;&#21830;&#25968;&#25454;</td></tr>'
+    : '<tr><td colspan="8" class="empty">暂无厂商数据</td></tr>'
 
   renderProviderChart(providers)
   renderLatencyChart(providers)
@@ -295,7 +454,7 @@ function renderLatencyChart(providers) {
     data: {
       labels: providers.map(provider => `${provider.provider}/${provider.model}`),
       datasets: [
-        { label: '&#24179;&#22343; (ms)', data: providers.map(provider => provider.avgLatencyMs || 0), backgroundColor: '#6366f1' },
+        { label: '平均 (ms)', data: providers.map(provider => provider.avgLatencyMs || 0), backgroundColor: '#6366f1' },
         { label: 'P95 (ms)', data: providers.map(provider => provider.p95LatencyMs || 0), backgroundColor: '#f59e0b' },
       ],
     },
@@ -304,18 +463,37 @@ function renderLatencyChart(providers) {
 }
 
 async function loadErrors() {
-  const failed = await fetchJson(`${API_BASE}/requests?limit=10&status=failed`)
-  const streamErrors = await fetchJson(`${API_BASE}/requests?limit=10&status=stream_error`)
-  const rows = [...(failed?.rows || []), ...(streamErrors?.rows || [])]
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+  const params = new URLSearchParams({ ...getTimeRange(), limit: 100 })
+  const data = await fetchJson(`${API_BASE}/requests?${params}`, 'recent-errors')
+  const rows = (data?.rows || [])
+    .filter(row => row.status !== 'success')
     .slice(0, 10)
   renderErrors(rows)
+}
+
+async function loadHttpLogs() {
+  const data = await fetchJson('/api/http-logs?limit=30', 'http-logs')
+  const rows = data?.rows || []
+  document.getElementById('httpLogTable').innerHTML = rows.length
+    ? rows.map(row => `
+      <tr>
+        <td>${formatTime(row.timestamp)}</td>
+        <td>${escapeHtml(row.id)}</td>
+        <td>${escapeHtml(row.method)}</td>
+        <td>${escapeHtml(row.url)}</td>
+        <td><span class="http-code ${statusCodeClass(row.statusCode)}">${row.statusCode}</span></td>
+        <td>${formatMs(row.responseTimeMs)}</td>
+        <td>${escapeHtml(row.host)}</td>
+        <td>${escapeHtml(row.remoteAddress)}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="8" class="empty">暂无 HTTP 请求记录</td></tr>'
 }
 
 function renderErrors(rows) {
   const container = document.getElementById('errorList')
   if (!rows.length) {
-    container.innerHTML = '<div class="empty">&#26242;&#26080;&#38169;&#35823;&#35760;&#24405;</div>'
+    container.innerHTML = '<div class="empty">暂无错误记录</div>'
     return
   }
 
@@ -328,13 +506,13 @@ function renderErrors(rows) {
       <span class="msg">${escapeHtml(row.error_message || row.error_code || '-')}</span>
       <span>${formatMs(row.latency_ms)}</span>
     </div>
-    ${row.raw_error ? `<div class="error-item" style="padding-top:0;font-size:12px;color:#6b7280"><span class="time"></span><span class="msg" style="color:#92400e;word-break:break-all">&#21407;&#22987;&#38169;&#35823;&#65306; ${escapeHtml(row.raw_error)}</span></div>` : ''}
+    ${row.raw_error ? `<div class="error-item" style="padding-top:0;font-size:12px;color:#6b7280"><span class="time"></span><span class="msg" style="color:#92400e;word-break:break-all">原始错误： ${escapeHtml(row.raw_error)}</span></div>` : ''}
   `).join('')
 }
 
 async function loadRequests() {
   const params = new URLSearchParams({ ...getTimeRange(), limit: PAGE_SIZE, offset: currentPage * PAGE_SIZE })
-  const data = await fetchJson(`${API_BASE}/requests?${params}`)
+  const data = await fetchJson(`${API_BASE}/requests?${params}`, 'requests')
   if (!data) return
 
   document.getElementById('requestTable').innerHTML = (data.rows || []).length
@@ -347,12 +525,13 @@ async function loadRequests() {
         <td>${formatMs(row.latency_ms)}</td>
         <td>${formatTokens((row.est_input_tokens || 0) + (row.est_output_tokens || 0))}</td>
         <td class="cost">${formatCost(row.est_cost_usd)}</td>
+        <td><div class="request-detail">${formatRequestDetail(row)}</div></td>
       </tr>
     `).join('')
-    : '<tr><td colspan="7" class="empty">&#26242;&#26080;&#35831;&#27714;&#35760;&#24405;</td></tr>'
+    : '<tr><td colspan="8" class="empty">暂无请求记录</td></tr>'
 
   const totalPages = Math.ceil(data.total / PAGE_SIZE)
-  document.getElementById('pageInfo').textContent = `&#31532; ${currentPage + 1} &#39029; / &#20849; ${totalPages || 1} &#39029;`
+  document.getElementById('pageInfo').textContent = `第 ${currentPage + 1} 页 / 共 ${totalPages || 1} 页`
   document.getElementById('prevBtn').disabled = currentPage <= 0
   document.getElementById('nextBtn').disabled = currentPage >= totalPages - 1
 }
@@ -367,22 +546,33 @@ function toggleAutoRefresh() {
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer)
     autoRefreshTimer = null
-    button.textContent = '&#33258;&#21160;&#21047;&#26032;&#65306;&#20851;'
+    button.textContent = '自动刷新：关'
     button.classList.remove('active')
     return
   }
 
   autoRefreshTimer = setInterval(loadAll, 10000)
-  button.textContent = '&#33258;&#21160;&#21047;&#26032;&#65306;&#24320;'
+  button.textContent = '自动刷新：开'
   button.classList.add('active')
 }
 
 async function loadAll() {
-  await Promise.all([loadSummary(), loadProviders(), loadErrors(), loadRequests()])
+  setGlobalStatus('loading', '\u6b63\u5728\u5237\u65b0\u7edf\u8ba1', `Started ${formatTime(new Date().toISOString())}`)
+  await Promise.all([loadSummary(), loadProviders(), loadErrors(), loadRequests(), loadHttpLogs()])
+  const items = Object.values(callFeedback)
+  const failed = items.filter(item => item.state === 'error')
+  const slowest = items
+    .filter(item => item.durationMs != null)
+    .sort((a, b) => b.durationMs - a.durationMs)[0]
+  if (failed.length) {
+    setGlobalStatus('error', `${failed.length} \u4e2a\u63a5\u53e3\u8c03\u7528\u5931\u8d25`, failed.map(item => `${item.name}: ${item.message}`).join(' | '))
+  } else {
+    setGlobalStatus('ok', '\u7edf\u8ba1\u63a5\u53e3\u6b63\u5e38', slowest ? `Slowest ${slowest.name}: ${slowest.durationMs}ms` : '-')
+  }
 }
 
 if (!getApiKey()) {
-  fetchJson(`${API_BASE}/summary`).then(data => { if (data) loadAll() })
+  fetchJson(`${API_BASE}/summary`, 'auth-check').then(data => { if (data) loadAll() })
 } else {
   loadAll()
 }

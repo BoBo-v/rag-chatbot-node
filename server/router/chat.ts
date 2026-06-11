@@ -196,30 +196,55 @@ export async function chatRoutes(app: FastifyInstance) {
                 })
             }
 
-            const wrapped = stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-                transform(chunk, controller) {
-                    lineBuffer += decoder.decode(chunk, { stream: true })
-                    const lines = lineBuffer.split('\n')
-                    lineBuffer = lines.pop() ?? ''
+            const streamChunks = async function* () {
+                const reader = stream.getReader()
+                try {
+                    while (true) {
+                        const { value, done } = await reader.read()
+                        if (done) break
+                        if (!value) continue
 
-                    for (const line of lines) {
-                        parseMetricLine(line)
+                        lineBuffer += decoder.decode(value, { stream: true })
+                        const lines = lineBuffer.split('\n')
+                        lineBuffer = lines.pop() ?? ''
+
+                        for (const line of lines) {
+                            parseMetricLine(line)
+                        }
+
+                        yield value
                     }
-
-                    controller.enqueue(chunk)
-                },
-                flush() {
+                } finally {
                     lineBuffer += decoder.decode()
                     parseMetricLine(lineBuffer)
                     finalizeMetric(log.status)
-                },
-            }))
+                    reader.releaseLock()
+                }
+            }
 
-            reply.header('Content-Type', 'application/x-ndjson')
-            reply.send(wrapped)
+            reply.hijack()
+            reply.raw.writeHead(200, {
+                'Content-Type': 'application/x-ndjson',
+                'Cache-Control': 'no-cache',
+                Connection: 'keep-alive',
+            })
             reply.raw.on('close', () => {
                 if (!reply.raw.writableEnded) finalizeMetric('client_aborted')
             })
+
+            try {
+                for await (const chunk of streamChunks()) {
+                    if (!reply.raw.write(chunk)) {
+                        await new Promise<void>(resolve => reply.raw.once('drain', resolve))
+                    }
+                }
+                reply.raw.end()
+            } catch (err) {
+                if (!reply.raw.writableEnded) {
+                    reply.raw.write(JSON.stringify({ error: err instanceof Error ? err.message : 'Stream write failed', done: true }) + '\n')
+                    reply.raw.end()
+                }
+            }
             return
         } catch (err) {
             request.log.error(err)
