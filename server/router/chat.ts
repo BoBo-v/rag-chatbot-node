@@ -16,11 +16,13 @@ interface ChatMessage {
     content: string
 }
 
+type RagMode = boolean | 'auto'
+
 interface ChatRequestBody {
     messages: ChatMessage[]
     model?: string
     provider?: ChatProviderId
-    rag?: boolean
+    rag?: RagMode | 'true' | 'false'
     fileId?: string
     topK?: number
     minScore?: number
@@ -370,7 +372,14 @@ function chatRequestBodySchema() {
                 description: '模型厂商。默认 ollama，可选 openai 或 anthropic。',
             },
             model: { type: 'string', default: config.defaultModel, description: '可选，模型名称。不传时使用所选厂商默认模型。' },
-            rag: { type: 'boolean', default: config.ragEnabled, description: '是否启用 RAG 检索。设为 false 时只调用模型，不注入知识库上下文。' },
+            rag: {
+                anyOf: [
+                    { type: 'boolean' },
+                    { type: 'string', enum: ['auto', 'true', 'false'] },
+                ],
+                default: 'auto',
+                description: 'RAG 模式。true 强制检索知识库，false 直接调用模型，auto 由后端根据问题和检索命中自动决定。',
+            },
             fileId: { type: 'string', description: '可选，限定只检索某个已上传文件。' },
             topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK, description: '可选，覆盖本次 RAG 返回数量。' },
             minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore, description: '可选，覆盖本次 RAG 最低综合分数。' },
@@ -409,26 +418,59 @@ async function buildRagContext(body: ChatRequestBody): Promise<{
     prompt: string
     results: SearchResult[]
 }> {
-    const enabled = body.rag ?? config.ragEnabled
+    const mode = normalizeRagMode(body.rag ?? config.ragMode)
 
-    if (!enabled) {
+    if (mode === false) {
         return { enabled: false, prompt: '', results: [] }
     }
 
     const lastMessage = body.messages[body.messages.length - 1]
-    const embeddings = await getEmbeddings([lastMessage.content])
-    const results = await search(embeddings[0], {
-        topK: parseBoundedNumber(body.topK, config.ragTopK, 1, 20),
-        minScore: parseBoundedNumber(body.minScore, config.ragMinScore, 0, 1),
-        fileId: body.fileId,
-        query: lastMessage.content,
-    })
+    const question = lastMessage.content
+    const forceRag = mode === true
+
+    let results: SearchResult[] = []
+    try {
+        const embeddings = await getEmbeddings([lastMessage.content])
+        results = await search(embeddings[0], {
+            topK: parseBoundedNumber(body.topK, config.ragTopK, 1, 20),
+            minScore: parseBoundedNumber(body.minScore, config.ragMinScore, 0, 1),
+            fileId: body.fileId,
+            query: lastMessage.content,
+        })
+    } catch (err) {
+        if (forceRag) throw err
+        return { enabled: false, prompt: '', results: [] }
+    }
+
+    const shouldUseRag = forceRag ? results.length > 0 : shouldAutoUseRag(question, results)
 
     return {
-        enabled: true,
-        prompt: results.length > 0 ? buildRagSystemPrompt(results) : '',
+        enabled: shouldUseRag,
+        prompt: shouldUseRag && results.length > 0 ? buildRagSystemPrompt(results) : '',
         results,
     }
+}
+
+function normalizeRagMode(value: unknown): RagMode {
+    if (value === true || value === 'true') return true
+    if (value === false || value === 'false') return false
+    return 'auto'
+}
+
+function shouldAutoUseRag(question: string, results: SearchResult[]): boolean {
+    if (results.length === 0) return false
+
+    const normalized = question.toLowerCase()
+    const explicitKnowledgeIntent = [
+        '知识库', '资料', '文档', '文件', '上传', '引用', '原文', 'pdf', 'md', 'txt',
+        '根据', '基于', '这份', '这个文件', '材料', '上下文', '检索',
+        'knowledge', 'document', 'file', 'context', 'source', 'according to',
+    ].some(keyword => normalized.includes(keyword))
+
+    if (explicitKnowledgeIntent) return true
+
+    const best = results[0]
+    return best.score >= 0.62 || best.keywordScore >= 0.55
 }
 
 function parseBoundedNumber(value: number | undefined, fallback: number, min: number, max: number): number {

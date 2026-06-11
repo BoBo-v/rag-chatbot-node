@@ -143,20 +143,16 @@ Content-Type: application/json
 {
   "provider": "openai",
   "model": "gpt-4o",
-  "rag": true,
+  "rag": "auto",
   "messages": [
     { "role": "user", "content": "根据知识库回答这个问题" }
   ]
 }
 ```
 
-RAG is controlled globally by `RAG_ENABLED` in `.env`. Per request, `rag` overrides the global default:
+RAG defaults to automatic routing. When `rag` is omitted or set to `"auto"`, the backend decides whether to inject knowledge-base context based on the user question and retrieval scores.
 
-```text
-RAG_ENABLED=false
-```
-
-Use `"rag": false` to call the model directly without retrieval, or `"rag": true` to force retrieval for a single request.
+Use `"rag": false` to call the model directly without retrieval, or `"rag": true` to force knowledge-base retrieval for a single request.
 
 The response stream uses Ollama-compatible NDJSON for all providers:
 
@@ -340,6 +336,7 @@ The retrieval pipeline uses:
 Important config:
 
 ```text
+RAG_MODE=auto
 RAG_TOP_K=5
 RAG_MIN_SCORE=0.35
 RAG_VECTOR_WEIGHT=0.8

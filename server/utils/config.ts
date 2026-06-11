@@ -25,6 +25,16 @@ function booleanFromEnv(name: string, fallback: boolean): boolean {
     return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase())
 }
 
+function ragModeFromEnv(): boolean | 'auto' {
+    const raw = process.env.RAG_MODE?.trim().toLowerCase()
+    if (raw === 'auto') return 'auto'
+    if (raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on') return true
+    if (raw === 'false' || raw === '0' || raw === 'no' || raw === 'off') return false
+
+    if (process.env.RAG_ENABLED) return booleanFromEnv('RAG_ENABLED', true)
+    return 'auto'
+}
+
 const chunkMaxLen = Math.max(100, numberFromEnv('CHUNK_MAX_LEN', 700))
 const chunkOverlap = Math.min(
     chunkMaxLen - 1,
@@ -44,6 +54,7 @@ export const config = {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
     anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
     anthropicDefaultModel: process.env.ANTHROPIC_DEFAULT_MODEL || 'claude-sonnet-4-5',
+    ragMode: ragModeFromEnv(),
     ragEnabled: booleanFromEnv('RAG_ENABLED', true),
     ragTopK: numberFromEnv('RAG_TOP_K', 5),
     ragMinScore: numberFromEnv('RAG_MIN_SCORE', 0.35),
