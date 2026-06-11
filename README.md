@@ -1,6 +1,6 @@
 # Node Fastify RAG
 
-Fastify backend for local knowledge-base RAG. It supports uploading `txt`, `md`, and `pdf` files, chunking text, generating embeddings with Ollama, storing chunks in SQLite, hybrid retrieval, and chat streaming through Ollama, OpenAI, or Anthropic Claude.
+Fastify backend for local knowledge-base RAG. It supports uploading `txt`, `md`, `pdf`, and image files, parsing images with a local vision model, chunking text, generating embeddings with Ollama, storing chunks in SQLite, hybrid retrieval, and chat streaming through Ollama, OpenAI, or Anthropic Claude.
 
 ## Requirements
 
@@ -9,6 +9,7 @@ Fastify backend for local knowledge-base RAG. It supports uploading `txt`, `md`,
 - Required Ollama models:
   - chat model: `qwen3:8b` by default when using `provider: "ollama"`
   - embedding model: `nomic-embed-text` by default
+  - vision model: `qwen3-vl:2b` by default when uploading images
 - Optional OpenAI API key when using `provider: "openai"`
 - Optional Anthropic API key when using `provider: "anthropic"`
 
@@ -112,6 +113,8 @@ ANTHROPIC_API_KEY=
 ANTHROPIC_BASE_URL=https://api.anthropic.com
 ANTHROPIC_DEFAULT_MODEL=claude-sonnet-4-5
 OLLAMA_TIMEOUT_MS=120000
+VISION_MODEL=qwen3-vl:2b
+UPLOAD_DIR=server/data/uploads
 ```
 
 Query provider availability:
@@ -168,11 +171,17 @@ Supported file types:
 - `.txt`
 - `.md`
 - `.pdf`
+- `.png`
+- `.jpg`
+- `.jpeg`
+- `.webp`
 
 Uploaded files are hashed with SHA-256.
 
 - Same content upload returns the existing file with `deduplicated: true`.
 - `POST /api/upload?overwrite=true` replaces the existing file with the same content hash.
+
+Image uploads are saved under `UPLOAD_DIR`, parsed by `VISION_MODEL` through Ollama, converted to Markdown, then chunked and embedded like ordinary text files. The generated Markdown includes the original local file path and vision model name for traceability.
 
 Reset the whole local vector store when changing embedding models or when rebuilding the knowledge base:
 

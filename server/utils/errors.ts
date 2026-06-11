@@ -77,6 +77,14 @@ export function classifyUploadError(err: unknown): AppError {
     }
 
     if (
+        message.includes('Vision model failed') ||
+        message.includes('Vision model returned empty text') ||
+        message.includes('model') && message.includes('not found')
+    ) {
+        return new AppError(502, 'VISION_MODEL_UNAVAILABLE', '视觉模型调用失败，请确认 Ollama 已启动并已安装 VISION_MODEL 配置的模型。')
+    }
+
+    if (
         code === 'ECONNREFUSED' ||
         code === 'UND_ERR_CONNECT_TIMEOUT' ||
         message.includes('Embedding failed') ||

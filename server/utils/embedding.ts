@@ -29,7 +29,10 @@ async function getEmbeddingBatch(texts: string[], offset: number): Promise<numbe
             }),
         })
 
-        if (!res.ok) throw new Error(`Embedding failed: ${res.status}`)
+        if (!res.ok) {
+            const errorText = await res.text()
+            throw new Error(`Embedding failed: ${res.status}${errorText ? ` ${errorText}` : ''}`)
+        }
         const data = await res.json()
         const embeddings = data.embeddings
 

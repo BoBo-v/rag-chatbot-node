@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
+import { mkdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 import { splitTextToChunks } from '../utils/chunker'
 import { getEmbeddings } from '../utils/embedding'
 import {
@@ -17,6 +19,7 @@ import {
 } from '../utils/vectorStore'
 import { config } from '../utils/config'
 import { classifyUploadError } from '../utils/errors'
+import { isSupportedImageMime, parseImageWithVision } from '../utils/vision'
 
 const pdfParse = require('pdf-parse')
 
@@ -154,16 +157,16 @@ export async function uploadRoutes(app: FastifyInstance) {
             }
 
             const ext = file.filename.split('.').pop()?.toLowerCase()
-            if (!ext || !['txt', 'md', 'pdf'].includes(ext)) {
+            if (!ext || !['txt', 'md', 'pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
                 publishUploadProgress(progressId, {
                     phase: 'failed',
                     percent: 100,
-                    message: '不支持的文件类型，仅支持 txt、md、pdf。',
+                    message: '不支持的文件类型，仅支持 txt、md、pdf、png、jpg、webp。',
                     done: true,
                     error: 'UNSUPPORTED_FILE_TYPE',
                 })
                 reply.status(400)
-                return reply.send({ error: '不支持的文件类型，仅支持 txt、md、pdf。', code: 'UNSUPPORTED_FILE_TYPE' })
+                return reply.send({ error: '不支持的文件类型，仅支持 txt、md、pdf、png、jpg、webp。', code: 'UNSUPPORTED_FILE_TYPE' })
             }
 
             const buffer = await readFileWithProgress(file.file, progressId, request.headers['content-length'])
@@ -200,11 +203,30 @@ export async function uploadRoutes(app: FastifyInstance) {
                 loaded: buffer.length,
                 total: buffer.length,
             })
+            const isImage = isSupportedImageMime(file.mimetype)
+            let sourcePath: string | undefined
+
             if (ext === 'txt' || ext === 'md') {
                 text = buffer.toString('utf-8')
             } else if (ext === 'pdf') {
                 const data = await pdfParse(buffer)
                 text = data.text
+            } else if (isImage) {
+                sourcePath = await saveUploadedSourceFile(buffer, contentHash, ext)
+                publishUploadProgress(progressId, {
+                    phase: 'parsing',
+                    percent: 68,
+                    message: `正在使用视觉模型 ${config.visionModel} 识别图片。`,
+                    loaded: buffer.length,
+                    total: buffer.length,
+                })
+                const vision = await parseImageWithVision(buffer, file.mimetype)
+                text = buildVisionKnowledgeText({
+                    filename: file.filename,
+                    sourcePath,
+                    model: vision.model,
+                    markdown: vision.markdown,
+                })
             }
 
             publishUploadProgress(progressId, {
@@ -571,6 +593,33 @@ function fileDetailToStoredFile(file: FileDetail) {
 
 function isContentHashConflict(err: unknown): boolean {
     return err instanceof Error && err.message.includes('UNIQUE constraint failed: files.content_hash')
+}
+
+async function saveUploadedSourceFile(buffer: Buffer, contentHash: string, ext: string): Promise<string> {
+    const safeExt = ext === 'jpeg' ? 'jpg' : ext
+    const relativePath = path.join(contentHash.slice(0, 2), `${contentHash}.${safeExt}`)
+    const absolutePath = path.resolve(process.cwd(), config.uploadDir, relativePath)
+    await mkdir(path.dirname(absolutePath), { recursive: true })
+    await writeFile(absolutePath, buffer)
+    return path.join(config.uploadDir, relativePath).replace(/\\/g, '/')
+}
+
+function buildVisionKnowledgeText(input: {
+    filename: string
+    sourcePath: string
+    model: string
+    markdown: string
+}): string {
+    return [
+        `# 图片资料：${input.filename}`,
+        '',
+        `- 原始文件：${input.sourcePath}`,
+        `- 视觉模型：${input.model}`,
+        '',
+        '## 识别与翻译结果',
+        '',
+        input.markdown,
+    ].join('\n')
 }
 
 async function readFileWithProgress(
