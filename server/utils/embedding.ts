@@ -14,7 +14,26 @@ export async function getEmbeddings(texts: string[]): Promise<number[][]> {
     return embeddings
 }
 
+const embeddingRetryDelaysMs = [0, 3000, 10000]
+
 async function getEmbeddingBatch(texts: string[], offset: number): Promise<number[][]> {
+    let lastError: unknown = null
+
+    for (const delayMs of embeddingRetryDelaysMs) {
+        if (delayMs > 0) await sleep(delayMs)
+
+        try {
+            return await requestEmbeddingBatch(texts, offset)
+        } catch (err) {
+            lastError = err
+        }
+    }
+
+    const message = lastError instanceof Error ? lastError.message : String(lastError)
+    throw new Error(`Embedding failed after ${embeddingRetryDelaysMs.length} attempts: ${message}`)
+}
+
+async function requestEmbeddingBatch(texts: string[], offset: number): Promise<number[][]> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), config.ollamaTimeoutMs)
 
@@ -54,4 +73,8 @@ async function getEmbeddingBatch(texts: string[], offset: number): Promise<numbe
     } finally {
         clearTimeout(timeout)
     }
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms))
 }

@@ -23,7 +23,7 @@ export function splitTextToChunks(
     for (const block of blocks) {
         const parts = splitBlock(block, maxLen)
 
-        for (const part of parts) {
+        for (const [partIndex, part] of parts.entries()) {
             const next = current ? `${current}\n${part}` : part
 
             if (next.length <= maxLen) {
@@ -35,7 +35,7 @@ export function splitTextToChunks(
                 chunks.push({ text: current, index: chunks.length })
             }
 
-            const overlapText = getOverlapText(current, overlap)
+            const overlapText = partIndex === 0 ? '' : getOverlapText(current, overlap)
             current = overlapText ? `${overlapText}\n${part}` : part
         }
     }

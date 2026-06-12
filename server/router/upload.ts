@@ -610,6 +610,8 @@ function buildVisionKnowledgeText(input: {
     model: string
     markdown: string
 }): string {
+    const markdown = stripOuterMarkdownFence(input.markdown)
+
     return [
         `# 图片资料：${input.filename}`,
         '',
@@ -618,8 +620,14 @@ function buildVisionKnowledgeText(input: {
         '',
         '## 识别与翻译结果',
         '',
-        input.markdown,
+        markdown,
     ].join('\n')
+}
+
+function stripOuterMarkdownFence(markdown: string): string {
+    const trimmed = markdown.trim()
+    const match = /^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i.exec(trimmed)
+    return match ? match[1].trim() : trimmed
 }
 
 async function readFileWithProgress(

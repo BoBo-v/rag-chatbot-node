@@ -18,45 +18,33 @@ const visionPrompt = [
     '5. 看不清或无法确认的内容标注为“无法确认”。',
 ].join('\n')
 
+const visionRetryPrompt = [
+    '请识别图片中的可见文字和关键信息。',
+    '只输出最终 Markdown 文本，不要解释过程。',
+    '如果没有可识别内容，输出：无法确认。',
+].join('\n')
+
+interface OllamaVisionResponse {
+    message?: { content?: string }
+    response?: string
+    thinking?: string
+    error?: string
+}
+
 export async function parseImageWithVision(buffer: Buffer, mimeType: string): Promise<VisionParseResult> {
     if (!isSupportedImageMime(mimeType)) {
         throw new Error(`Unsupported image mime type: ${mimeType}`)
     }
 
-    const response = await fetchWithTimeout(`${config.ollamaUrl}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            model: config.visionModel,
-            stream: false,
-            think: false,
-            keep_alive: 0,
-            messages: [
-                {
-                    role: 'user',
-                    content: visionPrompt,
-                    images: [buffer.toString('base64')],
-                },
-            ],
-        }),
-    }, config.ollamaTimeoutMs)
-
-    if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(errorText || `Vision model failed: ${response.status}`)
-    }
-
-    const data = await response.json() as {
-        message?: { content?: string }
-        response?: string
-        error?: string
-    }
-
-    if (data.error) throw new Error(data.error)
-
-    const rawText = data.message?.content || data.response || ''
+    const primary = await callVisionGenerate(buffer, visionPrompt)
+    const primaryText = extractVisionText(primary)
+    const retry = primaryText ? null : await callVisionGenerate(buffer, visionRetryPrompt)
+    const rawText = primaryText || extractVisionText(retry)
     const markdown = rawText.trim()
-    if (!markdown) throw new Error('Vision model returned empty text')
+
+    if (!markdown) {
+        throw new Error(`Vision model returned empty text; response=${summarizeVisionResponse(retry ?? primary)}`)
+    }
 
     return {
         model: config.visionModel,
@@ -67,6 +55,44 @@ export async function parseImageWithVision(buffer: Buffer, mimeType: string): Pr
 
 export function isSupportedImageMime(mimeType: string): boolean {
     return ['image/png', 'image/jpeg', 'image/webp'].includes(mimeType)
+}
+
+async function callVisionGenerate(buffer: Buffer, prompt: string): Promise<OllamaVisionResponse> {
+    const response = await fetchWithTimeout(`${config.ollamaUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            model: config.visionModel,
+            stream: false,
+            think: false,
+            keep_alive: '0s',
+            prompt,
+            images: [buffer.toString('base64')],
+        }),
+    }, config.ollamaTimeoutMs)
+
+    if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(errorText || `Vision model failed: ${response.status}`)
+    }
+
+    const data = await response.json() as OllamaVisionResponse
+
+    if (data.error) throw new Error(data.error)
+    return data
+}
+
+function extractVisionText(data: OllamaVisionResponse | null): string {
+    return (data?.response || data?.message?.content || '').trim()
+}
+
+function summarizeVisionResponse(data: OllamaVisionResponse): string {
+    return JSON.stringify({
+        responseLength: data.response?.length ?? 0,
+        messageContentLength: data.message?.content?.length ?? 0,
+        thinkingLength: data.thinking?.length ?? 0,
+        thinkingPreview: data.thinking?.trim().slice(0, 160),
+    })
 }
 
 function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {

@@ -1,6 +1,7 @@
 export interface ErrorResponseBody {
     error: string
     code?: string
+    detail?: string
 }
 
 export class AppError extends Error {
@@ -91,7 +92,11 @@ export function classifyUploadError(err: unknown): AppError {
         message.includes('/api/embed') ||
         message.includes('fetch failed')
     ) {
-        return new AppError(502, 'EMBEDDING_SERVICE_UNAVAILABLE', 'Embedding 服务调用失败，请确认 Ollama 已启动并已安装 embedding 模型。')
+        return new AppError(
+            502,
+            'EMBEDDING_SERVICE_UNAVAILABLE',
+            `Embedding 服务调用失败，请确认 Ollama 已启动并已安装 embedding 模型。${message ? ` 原因：${message}` : ''}`
+        )
     }
 
     return new AppError(500, 'UPLOAD_STORE_FAILED', '文件解析、向量化或写入知识库失败，请查看后端日志定位原因。')

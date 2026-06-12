@@ -63,7 +63,7 @@ export const config = {
     chunkMaxLen,
     chunkOverlap,
     embeddingBatchSize: Math.max(1, Math.floor(numberFromEnv('EMBEDDING_BATCH_SIZE', 16))),
-    ollamaTimeoutMs: Math.max(1000, numberFromEnv('OLLAMA_TIMEOUT_MS', 120000)),
+    ollamaTimeoutMs: Math.max(1000, numberFromEnv('OLLAMA_TIMEOUT_MS', 900000)),
     visionModel: process.env.VISION_MODEL || 'qwen3-vl:2b',
     uploadDir: process.env.UPLOAD_DIR || 'server/data/uploads',
     vectorStorePath: process.env.VECTOR_STORE_PATH || 'server/data/vector-store.sqlite',
