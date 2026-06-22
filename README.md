@@ -179,6 +179,16 @@ RAG_KEYWORD_WEIGHT=0.2
 CHUNK_MAX_LEN=700
 CHUNK_OVERLAP=100
 EMBEDDING_BATCH_SIZE=16
+RAG_VECTOR_CANDIDATE_LIMIT=1000
+
+VECTOR_BACKEND=sqlite
+QDRANT_URL=http://127.0.0.1:6333
+QDRANT_API_KEY=
+QDRANT_COLLECTION=knowledge_chunks
+QDRANT_DISTANCE=Cosine
+DEFAULT_TENANT_ID=default
+DEFAULT_PROJECT_ID=default
+DEFAULT_OWNER_USER_ID=local
 ```
 
 说明：
@@ -188,6 +198,26 @@ EMBEDDING_BATCH_SIZE=16
 - `EMBEDDING_MODEL` 建议中文知识库使用 `bge-m3`
 - `VISION_MODEL` 用于图片识别入库
 - `.env` 修改后必须重启后端才生效
+
+## Qdrant 向量后端
+
+默认 `VECTOR_BACKEND=sqlite`，保持单进程 SQLite + FTS + 本地向量比对，前端接口不需要变化。
+
+如果知识库 chunk 数量较大，可以切到 Qdrant：
+
+```env
+VECTOR_BACKEND=qdrant
+QDRANT_URL=http://127.0.0.1:6333
+QDRANT_COLLECTION=knowledge_chunks
+```
+
+切换后：
+- SQLite 仍保存 files/chunks 文本、FTS、指标和业务元数据
+- Qdrant 保存 chunk 向量和 payload，用于向量召回
+- `/api/search`、`/api/chat/context`、`/api/chat` 的前端调用方式不变
+- 如已有 SQLite 知识库，需要调用 `POST /api/vector-store/reindex` 重建 Qdrant 索引
+
+Qdrant payload 预留了 `tenantId`、`projectId`、`ownerUserId`，后续接用户、项目和权限系统时可以用于检索阶段过滤。
 
 ## 鉴权
 
@@ -378,6 +408,23 @@ GET /api/vector-store/status
 POST /api/vector-store/reset
 Content-Type: application/json
 ```
+
+重建向量索引接口：
+
+```http
+POST /api/vector-store/reindex
+Content-Type: application/json
+```
+
+请求体可选：
+
+```json
+{
+  "fileId": "file-id"
+}
+```
+
+`VECTOR_BACKEND=sqlite` 时该接口会返回 `skipped=true`；`VECTOR_BACKEND=qdrant` 时会从 SQLite chunks 重新 upsert 到 Qdrant。
 
 请求体：
 
