@@ -4,71 +4,29 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { config } from './config'
 import { initMetricsTable } from './metricsStore'
+import type {
+    AddFileInput,
+    FileDetail,
+    KnowledgeStore,
+    ResetVectorStoreResult,
+    SearchOptions,
+    SearchResult,
+    StoredChunk,
+    StoredFile,
+    VectorStoreStatus,
+} from '../knowledge/types'
 
-export interface StoredFile {
-    id: string
-    filename: string
-    mimeType: string
-    size: number
-    charCount: number
-    chunkCount: number
-    createdAt: string
-    contentHash?: string
-    embeddingModel?: string
-    embeddingDim?: number
-    chunkerVersion?: number
-}
-
-export interface StoredChunk {
-    id: string
-    fileId: string
-    filename: string
-    chunkIndex: number
-    text: string
-    embedding: number[]
-    createdAt: string
-    pageNumber?: number
-    embeddingModel?: string
-    embeddingDim?: number
-}
-
-export interface SearchResult extends StoredChunk {
-    score: number
-    vectorScore: number
-    keywordScore: number
-}
-
-export interface FileDetail extends StoredFile {
-    chunks: Array<Omit<StoredChunk, 'embedding'> & { embeddingSize: number }>
-}
-
-export interface VectorStoreStatus {
-    currentEmbeddingModel: string
-    fileCount: number
-    chunkCount: number
-    compatibleChunkCount: number
-    incompatibleChunkCount: number
-    needsReindex: boolean
-    embeddingDistributions: Array<{
-        embeddingModel: string
-        embeddingDim: number | null
-        chunkCount: number
-    }>
-}
-
-interface AddFileInput {
-    filename: string
-    mimeType: string
-    size: number
-    charCount: number
-    contentHash?: string
-    chunks: Array<{
-        text: string
-        embedding: number[]
-        chunkIndex: number
-        pageNumber?: number
-    }>
-}
+export type {
+    AddFileInput,
+    FileDetail,
+    KnowledgeStore,
+    ResetVectorStoreResult,
+    SearchOptions,
+    SearchResult,
+    StoredChunk,
+    StoredFile,
+    VectorStoreStatus,
+} from '../knowledge/types'
 
 interface ChunkRow {
     id: string
@@ -319,6 +277,18 @@ export async function getVectorStoreStatus(): Promise<VectorStoreStatus> {
         needsReindex: chunkCount > compatibleChunkCount,
         embeddingDistributions: distributions,
     }
+}
+
+export const sqliteKnowledgeStore: KnowledgeStore = {
+    addFileWithChunks,
+    replaceFileWithChunks,
+    search,
+    listFiles,
+    getFileDetail,
+    getFileByContentHash,
+    deleteFile,
+    resetVectorStore,
+    getVectorStoreStatus,
 }
 
 export function closeVectorStore(): void {
