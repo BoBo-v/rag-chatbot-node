@@ -60,6 +60,7 @@ export const config = {
     ragMinScore: numberFromEnv('RAG_MIN_SCORE', 0.35),
     ragVectorWeight: numberFromEnv('RAG_VECTOR_WEIGHT', 0.8),
     ragKeywordWeight: numberFromEnv('RAG_KEYWORD_WEIGHT', 0.2),
+    ragVectorCandidateLimit: Math.max(100, Math.floor(numberFromEnv('RAG_VECTOR_CANDIDATE_LIMIT', 1000))),
     chunkMaxLen,
     chunkOverlap,
     embeddingBatchSize: Math.max(1, Math.floor(numberFromEnv('EMBEDDING_BATCH_SIZE', 16))),

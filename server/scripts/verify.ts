@@ -14,6 +14,7 @@ import { getEmbeddings } from '../utils/embedding'
 import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { ollamaNdjsonToUnifiedStream } from '../llm/ollamaProvider'
 import { sseJsonToUnifiedStream } from '../llm/stream'
+import { config } from '../utils/config'
 
 function assert(condition: unknown, message: string): void {
     if (!condition) throw new Error(message)
@@ -323,6 +324,61 @@ async function verifyFtsAndVectorCandidateMerge() {
     await Promise.all(created.map(file => deleteFile(file.id)))
 }
 
+async function verifyVectorCandidateLimit() {
+    const previousLimit = config.ragVectorCandidateLimit
+    config.ragVectorCandidateLimit = 100
+    const created: Array<Awaited<ReturnType<typeof addFileWithChunks>>> = []
+    try {
+        for (let i = 0; i < 105; i++) {
+            created.push(await addFileWithChunks({
+                filename: `candidate-limit-${i}.txt`,
+                mimeType: 'text/plain',
+                size: 1,
+                charCount: 50,
+                chunks: [{
+                    text: i === 0 ? 'old-target-9527 candidate limit chunk 0' : `candidate limit chunk ${i}`,
+                    embedding: i === 0 ? [1, 0] : [0, 1],
+                    chunkIndex: 0,
+                }],
+            }))
+        }
+
+        const limitedResults = await search([1, 0], {
+            query: 'no lexical match here',
+            topK: 10,
+            minScore: 0.79,
+        })
+        assert(
+            !limitedResults.some(result => result.fileId === created[0].id),
+            `unscoped vector search should respect candidate limit: ${JSON.stringify(limitedResults)}`
+        )
+
+        const scopedResults = await search([1, 0], {
+            query: 'no lexical match here',
+            topK: 10,
+            minScore: 0.79,
+            fileId: created[0].id,
+        })
+        assert(
+            scopedResults.some(result => result.fileId === created[0].id),
+            `file-scoped vector search should still scan that file: ${JSON.stringify(scopedResults)}`
+        )
+
+        const keywordResults = await search([1, 0], {
+            query: 'old-target-9527',
+            topK: 10,
+            minScore: 0.9,
+        })
+        assert(
+            keywordResults.some(result => result.fileId === created[0].id),
+            `FTS candidates should survive vector candidate limit: ${JSON.stringify(keywordResults)}`
+        )
+    } finally {
+        config.ragVectorCandidateLimit = previousLimit
+        await Promise.all(created.map(file => deleteFile(file.id)))
+    }
+}
+
 async function verifyChineseFtsNgrams() {
     const created = await addFileWithChunks({
         filename: 'cn-fts.txt',
@@ -393,6 +449,7 @@ async function main() {
     await verifyEmbeddingMetadata()
     await verifyHybridSearch()
     await verifyFtsAndVectorCandidateMerge()
+    await verifyVectorCandidateLimit()
     await verifyChineseFtsNgrams()
 
     console.log(JSON.stringify({
@@ -408,6 +465,7 @@ async function main() {
             'embedding-metadata',
             'hybrid-search',
             'fts-vector-merge',
+            'vector-candidate-limit',
             'chinese-fts-ngrams',
         ],
     }))

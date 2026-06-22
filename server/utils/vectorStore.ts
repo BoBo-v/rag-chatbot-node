@@ -127,9 +127,11 @@ interface LegacyVectorStoreData {
 
 const dbPath = path.resolve(process.cwd(), config.vectorStorePath)
 const ftsIndexVersion = 2
+const embeddingCacheLimit = 5000
 let db: DatabaseSync | null = null
 let mutationQueue = Promise.resolve()
 let onDbReady: ((db: DatabaseSync) => void) | null = null
+const embeddingCache = new Map<string, { raw: string; embedding: number[] }>()
 
 export function setDbReadyCallback(cb: (db: DatabaseSync) => void): void {
     onDbReady = cb
@@ -623,7 +625,7 @@ function legacyJsonPath(): string {
 
 function selectSearchCandidateRows(fileId?: string, query?: string): FtsChunkRow[] {
     const ftsRows = selectFtsChunkRows(fileId, query)
-    const vectorRows = selectChunkRows(fileId)
+    const vectorRows = selectVectorCandidateRows(fileId)
     const rowsById = new Map<string, FtsChunkRow>()
 
     for (const row of vectorRows) {
@@ -635,6 +637,17 @@ function selectSearchCandidateRows(fileId?: string, query?: string): FtsChunkRow
     }
 
     return Array.from(rowsById.values())
+}
+
+function selectVectorCandidateRows(fileId?: string): ChunkRow[] {
+    if (fileId) return selectChunkRows(fileId)
+
+    return getDb().prepare(`
+        SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number, embedding_model, embedding_dim
+        FROM chunks
+        ORDER BY created_at DESC, chunk_index ASC
+        LIMIT ?
+    `).all(config.ragVectorCandidateLimit) as unknown as ChunkRow[]
 }
 
 function selectFtsChunkRows(fileId?: string, query?: string): FtsChunkRow[] {
@@ -720,7 +733,7 @@ function rowToFile(row: FileRow): StoredFile {
 }
 
 function rowToChunk(row: ChunkRow): StoredChunk {
-    const embedding = JSON.parse(row.embedding) as number[]
+    const embedding = parseCachedEmbedding(row.id, row.embedding)
     return {
         id: row.id,
         fileId: row.file_id,
@@ -733,6 +746,25 @@ function rowToChunk(row: ChunkRow): StoredChunk {
         embeddingModel: row.embedding_model ?? undefined,
         embeddingDim: row.embedding_dim ?? embedding.length,
     }
+}
+
+function parseCachedEmbedding(chunkId: string, rawEmbedding: string): number[] {
+    const cached = embeddingCache.get(chunkId)
+    if (cached?.raw === rawEmbedding) {
+        embeddingCache.delete(chunkId)
+        embeddingCache.set(chunkId, cached)
+        return cached.embedding
+    }
+
+    const embedding = JSON.parse(rawEmbedding) as number[]
+    embeddingCache.set(chunkId, { raw: rawEmbedding, embedding })
+
+    if (embeddingCache.size > embeddingCacheLimit) {
+        const oldestKey = embeddingCache.keys().next().value
+        if (oldestKey) embeddingCache.delete(oldestKey)
+    }
+
+    return embedding
 }
 
 function enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
