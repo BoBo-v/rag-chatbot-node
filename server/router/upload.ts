@@ -12,6 +12,7 @@ import {
     getFileDetail,
     getVectorStoreStatus,
     listFiles,
+    reindexVectorStore,
     replaceFileWithChunks,
     resetVectorStore,
     search,
@@ -459,6 +460,41 @@ export async function uploadRoutes(app: FastifyInstance) {
         return {
             ok: true,
             ...result,
+        }
+    })
+
+    app.post('/api/vector-store/reindex', {
+        schema: {
+            tags: ['Knowledge'],
+            summary: '重建向量索引',
+            description: '从本地知识库元数据重建当前向量索引。SQLite 后端会跳过；Qdrant 后端会重新 upsert chunk 向量。',
+            body: {
+                type: 'object',
+                properties: {
+                    fileId: { type: 'string', description: '可选，只重建指定文件的索引。' },
+                },
+            },
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        backend: { type: 'string' },
+                        filesIndexed: { type: 'number' },
+                        chunksIndexed: { type: 'number' },
+                        skipped: { type: 'boolean' },
+                    },
+                },
+                502: { $ref: 'ErrorResponse#' },
+            },
+        },
+    }, async (request, reply) => {
+        try {
+            const body = request.body as { fileId?: string } | undefined
+            return await reindexVectorStore(body?.fileId)
+        } catch (err) {
+            request.log.error(err)
+            reply.status(502)
+            return reply.send({ error: '向量索引重建失败，请检查向量索引服务状态。', code: 'VECTOR_INDEX_REINDEX_FAILED' })
         }
     })
 

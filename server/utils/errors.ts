@@ -88,10 +88,15 @@ export function classifyUploadError(err: unknown): AppError {
     if (
         code === 'ECONNREFUSED' ||
         code === 'UND_ERR_CONNECT_TIMEOUT' ||
+        message.includes('Qdrant') ||
         message.includes('Embedding failed') ||
         message.includes('/api/embed') ||
         message.includes('fetch failed')
     ) {
+        if (message.includes('Qdrant')) {
+            return new AppError(502, 'VECTOR_INDEX_UNAVAILABLE', '向量索引服务调用失败，请确认 Qdrant 已启动且配置正确。')
+        }
+
         return new AppError(
             502,
             'EMBEDDING_SERVICE_UNAVAILABLE',

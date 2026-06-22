@@ -4,15 +4,18 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { config } from './config'
 import { initMetricsTable } from './metricsStore'
+import { qdrantVectorIndex } from '../knowledge/qdrantVectorIndex'
 import type {
     AddFileInput,
     FileDetail,
     KnowledgeStore,
+    ReindexVectorStoreResult,
     ResetVectorStoreResult,
     SearchOptions,
     SearchResult,
     StoredChunk,
     StoredFile,
+    VectorIndexPoint,
     VectorStoreStatus,
 } from '../knowledge/types'
 
@@ -20,6 +23,7 @@ export type {
     AddFileInput,
     FileDetail,
     KnowledgeStore,
+    ReindexVectorStoreResult,
     ResetVectorStoreResult,
     SearchOptions,
     SearchResult,
@@ -100,34 +104,47 @@ export function setDbReadyCallback(cb: (db: DatabaseSync) => void): void {
 export async function addFileWithChunks(input: AddFileInput): Promise<StoredFile> {
     return enqueueMutation(async () => {
         const database = getDb()
+        let file: StoredFile | null = null
         database.exec('BEGIN')
         try {
-            const file = insertFileWithChunks(database, input)
+            file = insertFileWithChunks(database, input)
             database.exec('COMMIT')
-            return file
         } catch (err) {
             database.exec('ROLLBACK')
             throw err
         }
+
+        if (isQdrantBackend()) await indexFileChunks(file.id)
+        return file
     })
 }
 
 export async function replaceFileWithChunks(input: AddFileInput): Promise<StoredFile> {
     return enqueueMutation(async () => {
         const database = getDb()
+        const replacedFileIds = input.contentHash ? selectFileIdsByContentHash(database, input.contentHash) : []
+        let file: StoredFile | null = null
         database.exec('BEGIN')
         try {
             if (input.contentHash) {
                 database.prepare('DELETE FROM files WHERE content_hash = ?').run(input.contentHash)
             }
 
-            const file = insertFileWithChunks(database, input)
+            file = insertFileWithChunks(database, input)
             database.exec('COMMIT')
-            return file
         } catch (err) {
             database.exec('ROLLBACK')
             throw err
         }
+
+        if (isQdrantBackend()) {
+            for (const fileId of replacedFileIds) {
+                await qdrantVectorIndex.deleteByFileId(fileId)
+            }
+            await indexFileChunks(file.id)
+        }
+
+        return file
     })
 }
 
@@ -217,6 +234,8 @@ export async function deleteFile(fileId: string): Promise<boolean> {
         const existing = database.prepare('SELECT id FROM files WHERE id = ?').get(fileId)
         if (!existing) return false
 
+        if (isQdrantBackend()) await qdrantVectorIndex.deleteByFileId(fileId)
+
         database.exec('BEGIN')
         try {
             database.prepare('DELETE FROM files WHERE id = ?').run(fileId)
@@ -234,6 +253,8 @@ export async function resetVectorStore(): Promise<{ filesDeleted: number; chunks
         const database = getDb()
         const fileCount = (database.prepare('SELECT COUNT(*) AS count FROM files').get() as { count: number }).count
         const chunkCount = (database.prepare('SELECT COUNT(*) AS count FROM chunks').get() as { count: number }).count
+
+        if (isQdrantBackend()) await qdrantVectorIndex.reset()
 
         database.exec('BEGIN')
         try {
@@ -279,6 +300,28 @@ export async function getVectorStoreStatus(): Promise<VectorStoreStatus> {
     }
 }
 
+export async function reindexVectorStore(fileId?: string): Promise<ReindexVectorStoreResult> {
+    if (!isQdrantBackend()) {
+        return {
+            backend: 'sqlite',
+            filesIndexed: 0,
+            chunksIndexed: 0,
+            skipped: true,
+        }
+    }
+
+    const rows = selectChunkRows(fileId)
+    const points = rows.map(row => chunkRowToVectorIndexPoint(row))
+    await qdrantVectorIndex.upsert(points)
+
+    return {
+        backend: 'qdrant',
+        filesIndexed: new Set(rows.map(row => row.file_id)).size,
+        chunksIndexed: rows.length,
+        skipped: false,
+    }
+}
+
 export const sqliteKnowledgeStore: KnowledgeStore = {
     addFileWithChunks,
     replaceFileWithChunks,
@@ -288,6 +331,7 @@ export const sqliteKnowledgeStore: KnowledgeStore = {
     getFileByContentHash,
     deleteFile,
     resetVectorStore,
+    reindexVectorStore,
     getVectorStoreStatus,
 }
 
@@ -537,6 +581,38 @@ function insertFileWithChunks(database: DatabaseSync, input: AddFileInput): Stor
     }
 
     return file
+}
+
+async function indexFileChunks(fileId: string): Promise<void> {
+    const rows = selectChunkRows(fileId)
+    const points = rows.map(row => chunkRowToVectorIndexPoint(row))
+    await qdrantVectorIndex.upsert(points)
+}
+
+function chunkRowToVectorIndexPoint(row: ChunkRow): VectorIndexPoint {
+    const chunk = rowToChunk(row)
+    return {
+        chunkId: chunk.id,
+        fileId: chunk.fileId,
+        filename: chunk.filename,
+        chunkIndex: chunk.chunkIndex,
+        embedding: chunk.embedding,
+        embeddingModel: chunk.embeddingModel ?? config.embeddingModel,
+        embeddingDim: chunk.embeddingDim ?? chunk.embedding.length,
+        tenantId: config.defaultTenantId,
+        projectId: config.defaultProjectId,
+        ownerUserId: config.defaultOwnerUserId,
+        createdAt: chunk.createdAt,
+    }
+}
+
+function selectFileIdsByContentHash(database: DatabaseSync, contentHash: string): string[] {
+    return (database.prepare('SELECT id FROM files WHERE content_hash = ?').all(contentHash) as Array<{ id: string }>)
+        .map(row => row.id)
+}
+
+function isQdrantBackend(): boolean {
+    return config.vectorBackend === 'qdrant'
 }
 
 function ensureFtsTable(database: DatabaseSync): void {

@@ -132,6 +132,17 @@ async function main() {
         assert(context.results.length >= 1, `context should return results: ${JSON.stringify(context)}`)
         assert(context.prompt.includes('引用材料'), 'context prompt should use Chinese RAG instructions')
 
+        const reindex = await fetchJson<{ backend: string; skipped: boolean; chunksIndexed: number }>(
+            `http://127.0.0.1:${port}/api/vector-store/reindex`,
+            {
+                method: 'POST',
+                headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fileId: upload.file.id }),
+            }
+        )
+        assert(reindex.backend === 'sqlite', `sqlite reindex should identify backend: ${JSON.stringify(reindex)}`)
+        assert(reindex.skipped === true, `sqlite reindex should be skipped: ${JSON.stringify(reindex)}`)
+
         const badReset = await fetchJsonError(`http://127.0.0.1:${port}/api/vector-store/reset`, {
             method: 'POST',
             headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
@@ -182,7 +193,7 @@ async function main() {
 
         console.log(JSON.stringify({
             ok: true,
-            checks: ['auth', 'cors-error', 'not-found', 'search-validation', 'provider-error', 'swagger', 'providers', 'upload', 'search', 'vector-store-status', 'chat-context', 'vector-store-reset'],
+            checks: ['auth', 'cors-error', 'not-found', 'search-validation', 'provider-error', 'swagger', 'providers', 'upload', 'search', 'vector-store-status', 'chat-context', 'vector-store-reindex', 'vector-store-reset'],
         }))
     } finally {
         if (app) await app.close()

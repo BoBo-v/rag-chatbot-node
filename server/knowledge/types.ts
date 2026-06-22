@@ -120,6 +120,13 @@ export interface ResetVectorStoreResult {
     chunksDeleted: number
 }
 
+export interface ReindexVectorStoreResult {
+    backend: string
+    filesIndexed: number
+    chunksIndexed: number
+    skipped: boolean
+}
+
 export interface KnowledgeStore {
     addFileWithChunks(input: AddFileInput): Promise<StoredFile>
     replaceFileWithChunks(input: AddFileInput): Promise<StoredFile>
@@ -129,5 +136,6 @@ export interface KnowledgeStore {
     getFileByContentHash(contentHash: string): Promise<FileDetail | null>
     deleteFile(fileId: string): Promise<boolean>
     resetVectorStore(): Promise<ResetVectorStoreResult>
+    reindexVectorStore(fileId?: string): Promise<ReindexVectorStoreResult>
     getVectorStoreStatus(): Promise<VectorStoreStatus>
 }

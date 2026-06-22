@@ -5,6 +5,7 @@ import {
     getFileDetail,
     getVectorStoreStatus,
     listFiles,
+    reindexVectorStore,
     replaceFileWithChunks,
     resetVectorStore,
     search,
@@ -207,6 +208,62 @@ async function verifyContentHashDedupe() {
     )
 
     await deleteFile(replaced.id)
+}
+
+async function verifyQdrantIndexLifecycle() {
+    const previousBackend = config.vectorBackend
+    const previousFetch = globalThis.fetch
+    const calls: Array<{ url: string; method: string; body?: unknown }> = []
+
+    config.vectorBackend = 'qdrant'
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        calls.push({
+            url,
+            method,
+            body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+        })
+
+        if (method === 'GET' && url.includes('/collections/')) {
+            return new Response(JSON.stringify({ result: {} }), { status: 200 })
+        }
+
+        return new Response(JSON.stringify({ result: { ok: true } }), { status: 200 })
+    }) as typeof fetch
+
+    try {
+        const created = await addFileWithChunks({
+            filename: 'qdrant-index.txt',
+            mimeType: 'text/plain',
+            size: 1,
+            charCount: 20,
+            chunks: [{ text: 'qdrant index chunk', embedding: [1, 0], chunkIndex: 0 }],
+        })
+
+        assert(
+            calls.some(call => call.method === 'PUT' && call.url.includes('/points?wait=true')),
+            `qdrant upsert should be called: ${JSON.stringify(calls)}`
+        )
+
+        const reindex = await reindexVectorStore(created.id)
+        assert(reindex.backend === 'qdrant' && reindex.chunksIndexed === 1, `qdrant reindex failed: ${JSON.stringify(reindex)}`)
+
+        await deleteFile(created.id)
+        assert(
+            calls.some(call => call.method === 'POST' && call.url.includes('/points/delete?wait=true')),
+            `qdrant delete should be called: ${JSON.stringify(calls)}`
+        )
+
+        await resetVectorStore()
+        assert(
+            calls.some(call => call.method === 'DELETE' && call.url.includes('/collections/')),
+            `qdrant reset should be called: ${JSON.stringify(calls)}`
+        )
+    } finally {
+        config.vectorBackend = previousBackend
+        globalThis.fetch = previousFetch
+    }
 }
 
 async function verifyVectorStoreReset() {
@@ -477,6 +534,7 @@ async function main() {
     await verifyLegacyMigration()
     await verifyVectorStore()
     await verifyContentHashDedupe()
+    await verifyQdrantIndexLifecycle()
     await verifyVectorStoreReset()
     await verifyEmbeddingMetadata()
     await verifyHybridSearch()
@@ -494,6 +552,7 @@ async function main() {
             'legacy-migration',
             'vector-store',
             'content-hash-dedupe',
+            'qdrant-index-lifecycle',
             'vector-store-reset',
             'embedding-metadata',
             'hybrid-search',
