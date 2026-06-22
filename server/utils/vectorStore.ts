@@ -150,8 +150,10 @@ export async function replaceFileWithChunks(input: AddFileInput): Promise<Stored
 
 export async function search(
     queryEmbedding: number[],
-    options: { topK?: number; minScore?: number; fileId?: string; query?: string } = {}
+    options: SearchOptions = {}
 ): Promise<SearchResult[]> {
+    if (isQdrantBackend()) return searchWithQdrant(queryEmbedding, options)
+
     const topK = options.topK ?? config.ragTopK
     const minScore = options.minScore ?? config.ragMinScore
     const queryTokens = tokenize(options.query ?? '')
@@ -169,6 +171,75 @@ export async function search(
             ...chunk,
             score,
             vectorScore,
+            keywordScore,
+        }]
+    })
+
+    return scored
+        .filter(chunk => chunk.score >= minScore)
+        .sort((a, b) => b.score - a.score)
+        .reduce<SearchResult[]>((selected, candidate) => {
+            if (selected.length >= topK) return selected
+            if (selected.some(item => isNearDuplicate(item.text, candidate.text))) return selected
+            selected.push(candidate)
+            return selected
+        }, [])
+}
+
+async function searchWithQdrant(queryEmbedding: number[], options: SearchOptions): Promise<SearchResult[]> {
+    const topK = options.topK ?? config.ragTopK
+    const minScore = options.minScore ?? config.ragMinScore
+    const queryTokens = tokenize(options.query ?? '')
+    const vectorHits = await qdrantVectorIndex.search(queryEmbedding, {
+        topK: Math.max(topK, config.ragVectorCandidateLimit),
+        minScore: 0,
+        fileId: options.fileId,
+        embeddingModel: config.embeddingModel,
+    })
+    const ftsRows = selectFtsChunkRows(options.fileId, options.query)
+    const candidates = new Map<string, { row: ChunkRow; vectorScore: number; ftsRank: number | null; ftsPosition?: number }>()
+
+    const vectorRows = selectChunkRowsByIds(vectorHits.map(hit => hit.chunkId))
+    for (const hit of vectorHits) {
+        const row = vectorRows.get(hit.chunkId)
+        if (!row) continue
+        candidates.set(hit.chunkId, {
+            row,
+            vectorScore: hit.score,
+            ftsRank: null,
+        })
+    }
+
+    for (const row of ftsRows) {
+        const existing = candidates.get(row.id)
+        if (existing) {
+            existing.ftsRank = row.fts_rank
+            existing.ftsPosition = row.fts_position
+            continue
+        }
+
+        const chunk = rowToChunk(row)
+        if (!isCompatibleChunk(chunk, queryEmbedding.length)) continue
+        candidates.set(row.id, {
+            row,
+            vectorScore: cosineSimilarity(queryEmbedding, chunk.embedding),
+            ftsRank: row.fts_rank,
+            ftsPosition: row.fts_position,
+        })
+    }
+
+    const scored = Array.from(candidates.values()).flatMap(candidate => {
+        const chunk = rowToChunk(candidate.row)
+        if (!isCompatibleChunk(chunk, queryEmbedding.length)) return []
+
+        const lexicalScore = normalizeFtsRank(candidate.ftsRank, candidate.ftsPosition)
+        const keywordScore = Math.max(lexicalScore, keywordSimilarity(queryTokens, chunk.text))
+        const score = combineScores(candidate.vectorScore, keywordScore)
+
+        return [{
+            ...chunk,
+            score,
+            vectorScore: candidate.vectorScore,
             keywordScore,
         }]
     })
@@ -291,6 +362,7 @@ export async function getVectorStoreStatus(): Promise<VectorStoreStatus> {
 
     return {
         currentEmbeddingModel: config.embeddingModel,
+        backend: config.vectorBackend,
         fileCount,
         chunkCount,
         compatibleChunkCount,
@@ -745,6 +817,29 @@ function selectChunkRows(fileId?: string): ChunkRow[] {
         FROM chunks
         ORDER BY created_at DESC, chunk_index ASC
     `).all() as unknown as ChunkRow[]
+}
+
+function selectChunkRowsByIds(chunkIds: string[]): Map<string, ChunkRow> {
+    const uniqueIds = Array.from(new Set(chunkIds))
+    const rowsById = new Map<string, ChunkRow>()
+    if (uniqueIds.length === 0) return rowsById
+
+    const batchSize = 200
+    for (let i = 0; i < uniqueIds.length; i += batchSize) {
+        const batch = uniqueIds.slice(i, i + batchSize)
+        const placeholders = batch.map(() => '?').join(', ')
+        const rows = getDb().prepare(`
+            SELECT id, file_id, filename, chunk_index, text, embedding, created_at, page_number, embedding_model, embedding_dim
+            FROM chunks
+            WHERE id IN (${placeholders})
+        `).all(...batch) as unknown as ChunkRow[]
+
+        for (const row of rows) {
+            rowsById.set(row.id, row)
+        }
+    }
+
+    return rowsById
 }
 
 function selectAllChunkRows(database: DatabaseSync): ChunkRow[] {

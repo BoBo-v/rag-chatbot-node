@@ -266,6 +266,57 @@ async function verifyQdrantIndexLifecycle() {
     }
 }
 
+async function verifyQdrantSearchPath() {
+    const previousBackend = config.vectorBackend
+    const previousFetch = globalThis.fetch
+    let indexedChunkId = ''
+
+    config.vectorBackend = 'qdrant'
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {}
+
+        if (method === 'GET' && url.includes('/collections/')) {
+            return new Response(JSON.stringify({ result: {} }), { status: 200 })
+        }
+
+        if (method === 'PUT' && url.includes('/points?wait=true')) {
+            const points = body.points as Array<{ id: string }> | undefined
+            indexedChunkId = points?.[0]?.id ?? ''
+            return new Response(JSON.stringify({ result: { ok: true } }), { status: 200 })
+        }
+
+        if (method === 'POST' && url.includes('/points/search')) {
+            return new Response(JSON.stringify({ result: [{ id: indexedChunkId, score: 0.96 }] }), { status: 200 })
+        }
+
+        return new Response(JSON.stringify({ result: { ok: true } }), { status: 200 })
+    }) as typeof fetch
+
+    try {
+        const created = await addFileWithChunks({
+            filename: 'qdrant-search.txt',
+            mimeType: 'text/plain',
+            size: 1,
+            charCount: 20,
+            chunks: [{ text: 'qdrant semantic result', embedding: [1, 0], chunkIndex: 0 }],
+        })
+
+        const results = await search([1, 0], {
+            query: 'no lexical match',
+            topK: 3,
+            minScore: 0,
+        })
+
+        assert(results.length === 1 && results[0].fileId === created.id, `qdrant search path failed: ${JSON.stringify(results)}`)
+        await deleteFile(created.id)
+    } finally {
+        config.vectorBackend = previousBackend
+        globalThis.fetch = previousFetch
+    }
+}
+
 async function verifyVectorStoreReset() {
     await Promise.all([
         addFileWithChunks({
@@ -535,6 +586,7 @@ async function main() {
     await verifyVectorStore()
     await verifyContentHashDedupe()
     await verifyQdrantIndexLifecycle()
+    await verifyQdrantSearchPath()
     await verifyVectorStoreReset()
     await verifyEmbeddingMetadata()
     await verifyHybridSearch()
@@ -553,6 +605,7 @@ async function main() {
             'vector-store',
             'content-hash-dedupe',
             'qdrant-index-lifecycle',
+            'qdrant-search-path',
             'vector-store-reset',
             'embedding-metadata',
             'hybrid-search',

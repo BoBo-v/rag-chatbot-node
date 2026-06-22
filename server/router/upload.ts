@@ -508,6 +508,7 @@ export async function uploadRoutes(app: FastifyInstance) {
                     type: 'object',
                     properties: {
                         currentEmbeddingModel: { type: 'string', description: '当前配置的 embedding 模型' },
+                        backend: { type: 'string', description: '当前向量检索后端' },
                         fileCount: { type: 'number', description: '文件数量' },
                         chunkCount: { type: 'number', description: 'chunk 数量' },
                         compatibleChunkCount: { type: 'number', description: '与当前 embedding 模型兼容的 chunk 数量' },

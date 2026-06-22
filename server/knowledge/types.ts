@@ -37,6 +37,7 @@ export interface FileDetail extends StoredFile {
 
 export interface VectorStoreStatus {
     currentEmbeddingModel: string
+    backend?: string
     fileCount: number
     chunkCount: number
     compatibleChunkCount: number
