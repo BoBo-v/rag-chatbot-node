@@ -15,6 +15,7 @@ import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { ollamaNdjsonToUnifiedStream } from '../llm/ollamaProvider'
 import { sseJsonToUnifiedStream } from '../llm/stream'
 import { config } from '../utils/config'
+import { buildSearchFilter, toQdrantPoint } from '../knowledge/qdrantVectorIndex'
 
 function assert(condition: unknown, message: string): void {
     if (!condition) throw new Error(message)
@@ -91,6 +92,36 @@ async function verifyUnifiedChatStreams() {
         ]),
         `anthropic stream normalization failed: ${JSON.stringify(anthropicEvents)}`
     )
+}
+
+async function verifyQdrantPayloadBuilders() {
+    const point = toQdrantPoint({
+        chunkId: 'chunk-1',
+        fileId: 'file-1',
+        filename: 'a.txt',
+        chunkIndex: 2,
+        embedding: [0.1, 0.2],
+        embeddingModel: 'embed-model',
+        embeddingDim: 2,
+        createdAt: '2026-01-01T00:00:00.000Z',
+    })
+
+    assert(point.id === 'chunk-1', `qdrant point id failed: ${JSON.stringify(point)}`)
+    assert(JSON.stringify(point.vector) === JSON.stringify([0.1, 0.2]), `qdrant vector failed: ${JSON.stringify(point)}`)
+    assert(point.payload.fileId === 'file-1', `qdrant file payload failed: ${JSON.stringify(point)}`)
+    assert(point.payload.tenantId === config.defaultTenantId, `qdrant tenant default failed: ${JSON.stringify(point)}`)
+
+    const filter = buildSearchFilter({
+        topK: 5,
+        embeddingModel: 'embed-model',
+        fileId: 'file-1',
+    })
+    const serialized = JSON.stringify(filter)
+    assert(serialized.includes('"embeddingModel"'), `qdrant filter should include embedding model: ${serialized}`)
+    assert(serialized.includes('"tenantId"'), `qdrant filter should include tenant: ${serialized}`)
+    assert(serialized.includes('"projectId"'), `qdrant filter should include project: ${serialized}`)
+    assert(serialized.includes('"ownerUserId"'), `qdrant filter should include owner: ${serialized}`)
+    assert(serialized.includes('"fileId"'), `qdrant filter should include file scope: ${serialized}`)
 }
 
 async function verifyVectorStore() {
@@ -442,6 +473,7 @@ async function main() {
     await verifyChunker()
     await verifyEmbeddingFastPath()
     await verifyUnifiedChatStreams()
+    await verifyQdrantPayloadBuilders()
     await verifyLegacyMigration()
     await verifyVectorStore()
     await verifyContentHashDedupe()
@@ -458,6 +490,7 @@ async function main() {
             'chunker',
             'embedding-empty-input',
             'unified-chat-streams',
+            'qdrant-payload-builders',
             'legacy-migration',
             'vector-store',
             'content-hash-dedupe',

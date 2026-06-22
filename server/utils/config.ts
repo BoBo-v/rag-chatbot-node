@@ -35,6 +35,11 @@ function ragModeFromEnv(): boolean | 'auto' {
     return 'auto'
 }
 
+function vectorBackendFromEnv(): 'sqlite' | 'qdrant' {
+    const raw = process.env.VECTOR_BACKEND?.trim().toLowerCase()
+    return raw === 'qdrant' ? 'qdrant' : 'sqlite'
+}
+
 const chunkMaxLen = Math.max(100, numberFromEnv('CHUNK_MAX_LEN', 700))
 const chunkOverlap = Math.min(
     chunkMaxLen - 1,
@@ -68,5 +73,13 @@ export const config = {
     visionModel: process.env.VISION_MODEL || 'qwen3-vl:2b',
     uploadDir: process.env.UPLOAD_DIR || 'server/data/uploads',
     vectorStorePath: process.env.VECTOR_STORE_PATH || 'server/data/vector-store.sqlite',
+    vectorBackend: vectorBackendFromEnv(),
+    qdrantUrl: process.env.QDRANT_URL || 'http://127.0.0.1:6333',
+    qdrantApiKey: process.env.QDRANT_API_KEY || '',
+    qdrantCollection: process.env.QDRANT_COLLECTION || 'knowledge_chunks',
+    qdrantDistance: process.env.QDRANT_DISTANCE || 'Cosine',
+    defaultTenantId: process.env.DEFAULT_TENANT_ID || 'default',
+    defaultProjectId: process.env.DEFAULT_PROJECT_ID || 'default',
+    defaultOwnerUserId: process.env.DEFAULT_OWNER_USER_ID || 'local',
     metricsRetentionDays: numberFromEnv('METRICS_RETENTION_DAYS', 30),
 }

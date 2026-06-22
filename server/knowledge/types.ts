@@ -70,6 +70,51 @@ export interface SearchOptions {
     query?: string
 }
 
+export interface VectorIndexPoint {
+    chunkId: string
+    fileId: string
+    filename: string
+    chunkIndex: number
+    embedding: number[]
+    embeddingModel: string
+    embeddingDim: number
+    tenantId?: string
+    projectId?: string
+    ownerUserId?: string
+    createdAt?: string
+}
+
+export interface VectorIndexSearchOptions {
+    topK: number
+    minScore?: number
+    fileId?: string
+    embeddingModel: string
+    tenantId?: string
+    projectId?: string
+    ownerUserId?: string
+}
+
+export interface VectorIndexSearchResult {
+    chunkId: string
+    score: number
+}
+
+export interface VectorIndexStatus {
+    backend: string
+    ready: boolean
+    collection?: string
+    error?: string
+}
+
+export interface VectorIndex {
+    ensureReady(vectorSize: number): Promise<void>
+    upsert(points: VectorIndexPoint[]): Promise<void>
+    deleteByFileId(fileId: string): Promise<void>
+    reset(): Promise<void>
+    search(queryEmbedding: number[], options: VectorIndexSearchOptions): Promise<VectorIndexSearchResult[]>
+    status(): Promise<VectorIndexStatus>
+}
+
 export interface ResetVectorStoreResult {
     filesDeleted: number
     chunksDeleted: number
