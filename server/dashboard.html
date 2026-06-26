@@ -240,7 +240,7 @@ function renderCallFeedback() {
 }
 
 function summarizeResponse(data) {
-  if (!data || typeof data !== 'object') return '\u8c03\u7528\u6b63\u5e38'
+  if (!data || typeof data !== 'object') return '调用正常'
   const parts = []
   if (Array.isArray(data.rows)) parts.push(`rows=${data.rows.length}`)
   if (typeof data.total === 'number') parts.push(`total=${data.total}`)
@@ -249,12 +249,12 @@ function summarizeResponse(data) {
   if (typeof data.totalRequests === 'number') parts.push(`totalRequests=${data.totalRequests}`)
   if (typeof data.errorRate === 'number') parts.push(`errorRate=${(data.errorRate * 100).toFixed(1)}%`)
   if (typeof data.status === 'string') parts.push(`status=${data.status}`)
-  return parts.length ? parts.join(', ') : '\u8c03\u7528\u6b63\u5e38'
+  return parts.length ? parts.join(', ') : '调用正常'
 }
 
 async function fetchJson(url, label) {
   const startedAt = performance.now()
-  updateCallFeedback(label, { state: 'loading', message: '\u8bf7\u6c42\u4e2d...', updatedAt: new Date().toISOString() })
+  updateCallFeedback(label, { state: 'loading', message: '请求中...', updatedAt: new Date().toISOString() })
   try {
     const res = await fetch(url, { headers: headers() })
     const durationMs = Math.round(performance.now() - startedAt)
@@ -274,7 +274,7 @@ async function fetchJson(url, label) {
     }
 
     if (!res.ok) {
-      const message = data?.error || data?.message || text || res.statusText || '\u63a5\u53e3\u8fd4\u56de\u9519\u8bef'
+      const message = data?.error || data?.message || text || res.statusText || '接口返回错误'
       updateCallFeedback(label, { state: 'error', status: res.status, durationMs, message, updatedAt: new Date().toISOString() })
       return null
     }
@@ -557,7 +557,7 @@ function toggleAutoRefresh() {
 }
 
 async function loadAll() {
-  setGlobalStatus('loading', '\u6b63\u5728\u5237\u65b0\u7edf\u8ba1', `Started ${formatTime(new Date().toISOString())}`)
+  setGlobalStatus('loading', '正在刷新统计', `Started ${formatTime(new Date().toISOString())}`)
   await Promise.all([loadSummary(), loadProviders(), loadErrors(), loadRequests(), loadHttpLogs()])
   const items = Object.values(callFeedback)
   const failed = items.filter(item => item.state === 'error')
@@ -565,9 +565,9 @@ async function loadAll() {
     .filter(item => item.durationMs != null)
     .sort((a, b) => b.durationMs - a.durationMs)[0]
   if (failed.length) {
-    setGlobalStatus('error', `${failed.length} \u4e2a\u63a5\u53e3\u8c03\u7528\u5931\u8d25`, failed.map(item => `${item.name}: ${item.message}`).join(' | '))
+    setGlobalStatus('error', `${failed.length} 个接口调用失败`, failed.map(item => `${item.name}: ${item.message}`).join(' | '))
   } else {
-    setGlobalStatus('ok', '\u7edf\u8ba1\u63a5\u53e3\u6b63\u5e38', slowest ? `Slowest ${slowest.name}: ${slowest.durationMs}ms` : '-')
+    setGlobalStatus('ok', '统计接口正常', slowest ? `Slowest ${slowest.name}: ${slowest.durationMs}ms` : '-')
   }
 }
 

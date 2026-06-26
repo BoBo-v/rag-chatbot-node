@@ -510,7 +510,7 @@ function buildRagSystemPrompt(chunks: SearchResult[]): string {
         '不要编造引用材料中不存在的事实、数字、结论或来源。',
         '如果引用材料与问题无关，请直接说明没有检索到足够相关的知识库内容。',
         '',
-        '\u5f15\u7528\u6750\u6599:',
+        '引用材料:',
         context,
     ].join('\n')
 }
