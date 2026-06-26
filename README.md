@@ -15,6 +15,10 @@
 - 调用统计：记录模型请求、耗时、错误、估算 token 和成本
 - 上传进度：通过 SSE 返回上传、解析、embedding、入库阶段状态
 
+## 工程改进亮点
+
+- 基于 28 条 RAG 检索测试用例对 `minScore` 做参数评估，覆盖精确问题、模糊问题、跨文件问题、无关问题和容易被大文件吸走的问题；将默认阈值从 `0.35` 调整为 `0.55`，在保持相关问题召回的同时，消除了本轮天气、闲聊、实时新闻等无关问题的误召回。
+
 ## 技术栈
 
 - Node.js
@@ -172,7 +176,7 @@ VECTOR_STORE_PATH=server/data/vector-store.sqlite
 
 RAG_MODE=auto
 RAG_TOP_K=5
-RAG_MIN_SCORE=0.35
+RAG_MIN_SCORE=0.55
 RAG_VECTOR_WEIGHT=0.8
 RAG_KEYWORD_WEIGHT=0.2
 

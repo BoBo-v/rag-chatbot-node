@@ -62,7 +62,7 @@ export const config = {
     ragMode: ragModeFromEnv(),
     ragEnabled: booleanFromEnv('RAG_ENABLED', true),
     ragTopK: numberFromEnv('RAG_TOP_K', 5),
-    ragMinScore: numberFromEnv('RAG_MIN_SCORE', 0.35),
+    ragMinScore: numberFromEnv('RAG_MIN_SCORE', 0.55),
     ragVectorWeight: numberFromEnv('RAG_VECTOR_WEIGHT', 0.8),
     ragKeywordWeight: numberFromEnv('RAG_KEYWORD_WEIGHT', 0.2),
     ragVectorCandidateLimit: Math.max(100, Math.floor(numberFromEnv('RAG_VECTOR_CANDIDATE_LIMIT', 1000))),
