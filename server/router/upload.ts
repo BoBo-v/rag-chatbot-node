@@ -389,7 +389,7 @@ export async function uploadRoutes(app: FastifyInstance) {
                 type: 'object',
                 required: ['id'],
                 properties: {
-                    id: { type: 'string', description: '文件 ID' },
+                    id: { type: 'string', pattern: uuidPattern, description: '文件 ID' },
                 },
             },
             response: {
@@ -430,7 +430,7 @@ export async function uploadRoutes(app: FastifyInstance) {
                 type: 'object',
                 required: ['id'],
                 properties: {
-                    id: { type: 'string', description: '文件 ID' },
+                    id: { type: 'string', pattern: uuidPattern, description: '文件 ID' },
                 },
             },
             response: {
@@ -517,7 +517,7 @@ export async function uploadRoutes(app: FastifyInstance) {
             body: {
                 type: 'object',
                 properties: {
-                    fileId: { type: 'string', description: '可选，只重建指定文件的索引。' },
+                    fileId: { type: 'string', pattern: uuidPattern, description: '可选，只重建指定文件的索引。' },
                 },
             },
             response: {
