@@ -57,12 +57,23 @@ export async function uploadRoutes(app: FastifyInstance) {
                 type: 'object',
                 required: ['id'],
                 properties: {
-                    id: { type: 'string', description: '上传进度 ID，由前端生成并传给 /api/upload?progressId=...' },
+                    id: {
+                        type: 'string',
+                        minLength: 1,
+                        maxLength: 80,
+                        pattern: safeIdPattern,
+                        description: '上传进度 ID，由前端生成并传给 /api/upload?progressId=...',
+                    },
                 },
             },
         },
     }, async (request, reply) => {
         const { id } = request.params as { id: string }
+        if (!isSafeId(id)) {
+            reply.status(400)
+            return reply.send({ error: 'progressId 格式不正确。', code: 'INVALID_PROGRESS_ID' })
+        }
+
         const eventName = progressEventName(id)
         let closed = false
 
@@ -113,6 +124,9 @@ export async function uploadRoutes(app: FastifyInstance) {
                     },
                     progressId: {
                         type: 'string',
+                        minLength: 1,
+                        maxLength: 80,
+                        pattern: safeIdPattern,
                         description: '可选，前端生成的上传进度 ID。传入后可通过 /api/upload/progress/:id 订阅进度。',
                     },
                 },
@@ -146,6 +160,10 @@ export async function uploadRoutes(app: FastifyInstance) {
     }, async (request, reply) => {
         const query = request.query as { overwrite?: boolean | string; progressId?: string }
         const progressId = normalizeProgressId(query.progressId)
+        if (query.progressId && !progressId) {
+            reply.status(400)
+            return reply.send({ error: 'progressId 格式不正确。', code: 'INVALID_PROGRESS_ID' })
+        }
 
         try {
             const file = await request.file()
@@ -577,10 +595,10 @@ export async function uploadRoutes(app: FastifyInstance) {
                 type: 'object',
                 required: ['q'],
                 properties: {
-                    q: { type: 'string', description: '检索问题或关键词' },
+                    q: { type: 'string', minLength: 1, maxLength: searchQueryMaxLength, description: '检索问题或关键词' },
                     topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK, description: '返回结果数量，范围 1-20' },
                     minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore, description: '最低综合分数，范围 0-1' },
-                    fileId: { type: 'string', description: '可选，限定只检索某个文件' },
+                    fileId: { type: 'string', pattern: uuidPattern, description: '可选，限定只检索某个文件' },
                 },
             },
             response: {
@@ -672,6 +690,8 @@ function isSupportedFileExtension(ext: string): ext is typeof supportedFileExten
 
 function isMimeTypeCompatible(ext: typeof supportedFileExtensions[number], mimeType: string): boolean {
     const normalized = mimeType.toLowerCase()
+    // Some clients upload text/PDF files as application/octet-stream; keep this compatibility path,
+    // while image uploads still require an exact image MIME type.
     const compatibleTypes: Record<typeof supportedFileExtensions[number], string[]> = {
         txt: ['text/plain', 'application/octet-stream'],
         md: ['text/markdown', 'text/plain', 'application/octet-stream'],
@@ -687,6 +707,10 @@ function isMimeTypeCompatible(ext: typeof supportedFileExtensions[number], mimeT
 
 function isUuid(value: string): boolean {
     return new RegExp(uuidPattern).test(value)
+}
+
+function isSafeId(value: string): boolean {
+    return new RegExp(safeIdPattern).test(value)
 }
 
 function fileDetailToStoredFile(file: FileDetail) {
@@ -777,7 +801,7 @@ async function readFileWithProgress(
 function normalizeProgressId(value: string | undefined): string | undefined {
     if (!value) return undefined
     const trimmed = value.trim()
-    if (!new RegExp(safeIdPattern).test(trimmed)) return undefined
+    if (!isSafeId(trimmed)) return undefined
     return trimmed
 }
 

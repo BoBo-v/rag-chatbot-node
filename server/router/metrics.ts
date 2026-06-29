@@ -13,6 +13,7 @@ const metricProviderMaxLength = 40
 const metricStatusValues = ['success', 'failed', 'stream_error', 'client_aborted']
 const compareIdMaxLength = 80
 const safeTokenPattern = '^[A-Za-z0-9_-]+$'
+const isoDateTimePattern = '^(\\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):([0-5]\\d):([0-5]\\d)(?:\\.(\\d{1,3}))?(Z|[+-](?:[01]\\d|2[0-3]):[0-5]\\d)$'
 
 export async function metricsRoutes(app: FastifyInstance) {
     app.get('/api/metrics/summary', {
@@ -23,8 +24,8 @@ export async function metricsRoutes(app: FastifyInstance) {
             querystring: {
                 type: 'object',
                 properties: {
-                    from: { type: 'string', description: 'ISO 8601 起始时间' },
-                    to: { type: 'string', description: 'ISO 8601 结束时间' },
+                    from: { type: 'string', format: 'date-time', description: 'ISO 8601 起始时间' },
+                    to: { type: 'string', format: 'date-time', description: 'ISO 8601 结束时间' },
                 },
             },
         },
@@ -160,8 +161,42 @@ function validateTimeRange(from?: string, to?: string): string | null {
 function parseIsoDateTime(value?: string): number | null {
     if (!value) return null
 
-    const timestamp = Date.parse(value)
+    const match = new RegExp(isoDateTimePattern).exec(value)
+    if (!match) return null
+
+    const [, year, month, day, hour, minute, second, fraction = '', zone] = match
+    const millisecond = Number((fraction + '000').slice(0, 3))
+    const offsetMs = zone === 'Z' ? 0 : parseTimezoneOffsetMs(zone)
+    const timestamp = Date.UTC(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hour),
+        Number(minute),
+        Number(second),
+        millisecond,
+    ) - offsetMs
+
     if (!Number.isFinite(timestamp)) return null
 
+    const localTime = new Date(timestamp + offsetMs)
+    if (
+        localTime.getUTCFullYear() !== Number(year) ||
+        localTime.getUTCMonth() + 1 !== Number(month) ||
+        localTime.getUTCDate() !== Number(day) ||
+        localTime.getUTCHours() !== Number(hour) ||
+        localTime.getUTCMinutes() !== Number(minute) ||
+        localTime.getUTCSeconds() !== Number(second) ||
+        localTime.getUTCMilliseconds() !== millisecond
+    ) {
+        return null
+    }
+
     return timestamp
+}
+
+function parseTimezoneOffsetMs(zone: string): number {
+    const sign = zone[0] === '-' ? -1 : 1
+    const [hours, minutes] = zone.slice(1).split(':').map(Number)
+    return sign * ((hours * 60) + minutes) * 60 * 1000
 }
