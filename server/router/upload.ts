@@ -42,6 +42,10 @@ const uploadProgressEvents = new EventEmitter()
 const uploadProgressSessions = new Map<string, UploadProgress>()
 const uploadProgressTimers = new Map<string, NodeJS.Timeout>()
 const uploadProgressTtlMs = 10 * 60 * 1000
+const supportedFileExtensions = ['txt', 'md', 'pdf', 'png', 'jpg', 'jpeg', 'webp'] as const
+const safeIdPattern = '^[A-Za-z0-9_-]{1,80}$'
+const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+const searchQueryMaxLength = 2000
 
 export async function uploadRoutes(app: FastifyInstance) {
     app.get('/api/upload/progress/:id', {
@@ -158,7 +162,7 @@ export async function uploadRoutes(app: FastifyInstance) {
             }
 
             const ext = file.filename.split('.').pop()?.toLowerCase()
-            if (!ext || !['txt', 'md', 'pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
+            if (!ext || !isSupportedFileExtension(ext)) {
                 publishUploadProgress(progressId, {
                     phase: 'failed',
                     percent: 100,
@@ -168,6 +172,18 @@ export async function uploadRoutes(app: FastifyInstance) {
                 })
                 reply.status(400)
                 return reply.send({ error: '不支持的文件类型，仅支持 txt、md、pdf、png、jpg、webp。', code: 'UNSUPPORTED_FILE_TYPE' })
+            }
+
+            if (!isMimeTypeCompatible(ext, file.mimetype)) {
+                publishUploadProgress(progressId, {
+                    phase: 'failed',
+                    percent: 100,
+                    message: '文件扩展名和 MIME 类型不一致，请确认上传文件类型。',
+                    done: true,
+                    error: 'MIME_TYPE_MISMATCH',
+                })
+                reply.status(400)
+                return reply.send({ error: '文件扩展名和 MIME 类型不一致，请确认上传文件类型。', code: 'MIME_TYPE_MISMATCH' })
             }
 
             const buffer = await readFileWithProgress(file.file, progressId, request.headers['content-length'])
@@ -366,11 +382,17 @@ export async function uploadRoutes(app: FastifyInstance) {
                         file: { $ref: 'FileDetail#' },
                     },
                 },
+                400: { $ref: 'ErrorResponse#' },
                 404: { $ref: 'ErrorResponse#' },
             },
         },
     }, async (request, reply) => {
         const params = request.params as { id: string }
+        if (!isUuid(params.id)) {
+            reply.status(400)
+            return reply.send({ error: '文件 ID 格式不正确。', code: 'INVALID_FILE_ID' })
+        }
+
         const file = await getFileDetail(params.id)
 
         if (!file) {
@@ -401,11 +423,17 @@ export async function uploadRoutes(app: FastifyInstance) {
                         ok: { type: 'boolean', description: '是否删除成功' },
                     },
                 },
+                400: { $ref: 'ErrorResponse#' },
                 404: { $ref: 'ErrorResponse#' },
             },
         },
     }, async (request, reply) => {
         const params = request.params as { id: string }
+        if (!isUuid(params.id)) {
+            reply.status(400)
+            return reply.send({ error: '文件 ID 格式不正确。', code: 'INVALID_FILE_ID' })
+        }
+
         const deleted = await deleteFile(params.id)
 
         if (!deleted) {
@@ -484,12 +512,18 @@ export async function uploadRoutes(app: FastifyInstance) {
                         skipped: { type: 'boolean' },
                     },
                 },
+                400: { $ref: 'ErrorResponse#' },
                 502: { $ref: 'ErrorResponse#' },
             },
         },
     }, async (request, reply) => {
         try {
             const body = request.body as { fileId?: string } | undefined
+            if (body?.fileId && !isUuid(body.fileId)) {
+                reply.status(400)
+                return reply.send({ error: 'fileId 格式不正确。', code: 'INVALID_FILE_ID' })
+            }
+
             return await reindexVectorStore(body?.fileId)
         } catch (err) {
             request.log.error(err)
@@ -576,9 +610,18 @@ export async function uploadRoutes(app: FastifyInstance) {
                 fileId?: string
             }
 
-            if (!query.q || typeof query.q !== 'string') {
+            if (!query.q || typeof query.q !== 'string' || query.q.trim().length === 0) {
                 reply.status(400)
                 return reply.send({ error: '查询参数 q 不能为空。', code: 'QUERY_REQUIRED' })
+            }
+
+            if (query.q.length > searchQueryMaxLength) {
+                reply.status(400)
+                return reply.send({ error: `查询参数 q 不能超过 ${searchQueryMaxLength} 个字符。`, code: 'QUERY_TOO_LONG' })
+            }
+            if (query.fileId && !isUuid(query.fileId)) {
+                reply.status(400)
+                return reply.send({ error: 'fileId 格式不正确。', code: 'INVALID_FILE_ID' })
             }
 
             const topK = parseBoundedNumber(query.topK, config.ragTopK, 1, 20)
@@ -621,6 +664,29 @@ function parseBoundedNumber(value: string | undefined, fallback: number, min: nu
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) return fallback
     return Math.min(max, Math.max(min, parsed))
+}
+
+function isSupportedFileExtension(ext: string): ext is typeof supportedFileExtensions[number] {
+    return supportedFileExtensions.includes(ext as typeof supportedFileExtensions[number])
+}
+
+function isMimeTypeCompatible(ext: typeof supportedFileExtensions[number], mimeType: string): boolean {
+    const normalized = mimeType.toLowerCase()
+    const compatibleTypes: Record<typeof supportedFileExtensions[number], string[]> = {
+        txt: ['text/plain', 'application/octet-stream'],
+        md: ['text/markdown', 'text/plain', 'application/octet-stream'],
+        pdf: ['application/pdf', 'application/octet-stream'],
+        png: ['image/png'],
+        jpg: ['image/jpeg'],
+        jpeg: ['image/jpeg'],
+        webp: ['image/webp'],
+    }
+
+    return compatibleTypes[ext].includes(normalized)
+}
+
+function isUuid(value: string): boolean {
+    return new RegExp(uuidPattern).test(value)
 }
 
 function fileDetailToStoredFile(file: FileDetail) {
@@ -711,7 +777,7 @@ async function readFileWithProgress(
 function normalizeProgressId(value: string | undefined): string | undefined {
     if (!value) return undefined
     const trimmed = value.trim()
-    if (!/^[A-Za-z0-9_-]{1,80}$/.test(trimmed)) return undefined
+    if (!new RegExp(safeIdPattern).test(trimmed)) return undefined
     return trimmed
 }
 

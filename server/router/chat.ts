@@ -10,6 +10,14 @@ import { computeCost, parsePricingFromEnv } from '../utils/pricing'
 import { recordMetric } from '../utils/metricsCollector'
 
 const envPricingTable = parsePricingFromEnv(process.env.PRICING_TABLE || '')
+const chatMessageMaxCount = 50
+const chatMessageContentMaxLength = 20000
+const modelNameMaxLength = 120
+const compareIdMaxLength = 80
+const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+const safeTokenPattern = '^[A-Za-z0-9_-]+$'
+const modelNamePattern = '^[A-Za-z0-9._:/@+-]+$'
+const chatRoleValues = ['system', 'user', 'assistant']
 
 interface ChatMessage {
     role: string
@@ -371,7 +379,14 @@ function chatRequestBodySchema() {
                 default: 'ollama',
                 description: '模型厂商。默认 ollama，可选 openai 或 anthropic。',
             },
-            model: { type: 'string', default: config.defaultModel, description: '可选，模型名称。不传时使用所选厂商默认模型。' },
+            model: {
+                type: 'string',
+                minLength: 1,
+                maxLength: modelNameMaxLength,
+                pattern: modelNamePattern,
+                default: config.defaultModel,
+                description: '可选，模型名称。不传时使用所选厂商默认模型。',
+            },
             rag: {
                 anyOf: [
                     { type: 'boolean' },
@@ -380,19 +395,33 @@ function chatRequestBodySchema() {
                 default: 'auto',
                 description: 'RAG 模式。true 强制检索知识库，false 直接调用模型，auto 由后端根据问题和检索命中自动决定。',
             },
-            fileId: { type: 'string', description: '可选，限定只检索某个已上传文件。' },
+            fileId: { type: 'string', pattern: uuidPattern, description: '可选，限定只检索某个已上传文件。' },
             topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK, description: '可选，覆盖本次 RAG 返回数量。' },
             minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore, description: '可选，覆盖本次 RAG 最低综合分数。' },
-            compareId: { type: 'string', description: '可选，一次用户对比的分组 ID，多个模型请求可共享同一 compareId 用于统计汇总。' },
+            compareId: {
+                type: 'string',
+                minLength: 1,
+                maxLength: compareIdMaxLength,
+                pattern: safeTokenPattern,
+                description: '可选，一次用户对比的分组 ID，多个模型请求可共享同一 compareId 用于统计汇总。',
+            },
             messages: {
                 type: 'array',
+                minItems: 1,
+                maxItems: chatMessageMaxCount,
                 description: '对话消息列表',
                 items: {
                     type: 'object',
                     required: ['role', 'content'],
+                    additionalProperties: false,
                     properties: {
-                        role: { type: 'string', description: '消息角色，例如 user、assistant、system' },
-                        content: { type: 'string', description: '消息内容' },
+                        role: { type: 'string', enum: chatRoleValues, description: '消息角色，例如 user、assistant、system' },
+                        content: {
+                            type: 'string',
+                            minLength: 1,
+                            maxLength: chatMessageContentMaxLength,
+                            description: '消息内容',
+                        },
                     },
                 },
             },
@@ -405,8 +434,24 @@ function validateChatBody(body: ChatRequestBody): string | null {
         return 'messages 不能为空'
     }
 
+    if (body.messages.length > chatMessageMaxCount) {
+        return `messages 最多支持 ${chatMessageMaxCount} 条`
+    }
+
+    for (const [index, message] of body.messages.entries()) {
+        if (!chatRoleValues.includes(message?.role)) {
+            return `messages[${index}].role 必须是 system、user 或 assistant`
+        }
+        if (typeof message.content !== 'string' || message.content.trim().length === 0) {
+            return `messages[${index}].content 不能为空`
+        }
+        if (message.content.length > chatMessageContentMaxLength) {
+            return `messages[${index}].content 不能超过 ${chatMessageContentMaxLength} 个字符`
+        }
+    }
+
     const lastMessage = body.messages[body.messages.length - 1]
-    if (!lastMessage?.content || typeof lastMessage.content !== 'string') {
+    if (!lastMessage?.content || typeof lastMessage.content !== 'string' || lastMessage.content.trim().length === 0) {
         return '最后一条消息 content 不能为空'
     }
 

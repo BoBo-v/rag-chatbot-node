@@ -9,6 +9,11 @@ import {
     queryCompare,
 } from '../utils/metricsStore'
 
+const metricProviderMaxLength = 40
+const metricStatusValues = ['success', 'failed', 'stream_error', 'client_aborted']
+const compareIdMaxLength = 80
+const safeTokenPattern = '^[A-Za-z0-9_-]+$'
+
 export async function metricsRoutes(app: FastifyInstance) {
     app.get('/api/metrics/summary', {
         schema: {
@@ -23,8 +28,14 @@ export async function metricsRoutes(app: FastifyInstance) {
                 },
             },
         },
-    }, async (request) => {
+    }, async (request, reply) => {
         const { from, to } = request.query as { from?: string; to?: string }
+        const validation = validateTimeRange(from, to)
+        if (validation) {
+            reply.status(400)
+            return reply.send({ error: validation, code: 'INVALID_TIME_RANGE' })
+        }
+
         const db = getMetricsDb()
         return querySummary(db, { from, to })
     })
@@ -37,13 +48,19 @@ export async function metricsRoutes(app: FastifyInstance) {
             querystring: {
                 type: 'object',
                 properties: {
-                    from: { type: 'string' },
-                    to: { type: 'string' },
+                    from: { type: 'string', format: 'date-time' },
+                    to: { type: 'string', format: 'date-time' },
                 },
             },
         },
-    }, async (request) => {
+    }, async (request, reply) => {
         const { from, to } = request.query as { from?: string; to?: string }
+        const validation = validateTimeRange(from, to)
+        if (validation) {
+            reply.status(400)
+            return reply.send({ error: validation, code: 'INVALID_TIME_RANGE' })
+        }
+
         const db = getMetricsDb()
         return { providers: queryProviders(db, { from, to }) }
     })
@@ -58,14 +75,14 @@ export async function metricsRoutes(app: FastifyInstance) {
                 properties: {
                     limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
                     offset: { type: 'integer', minimum: 0, default: 0 },
-                    provider: { type: 'string' },
-                    status: { type: 'string' },
-                    from: { type: 'string' },
-                    to: { type: 'string' },
+                    provider: { type: 'string', minLength: 1, maxLength: metricProviderMaxLength, pattern: safeTokenPattern },
+                    status: { type: 'string', enum: metricStatusValues },
+                    from: { type: 'string', format: 'date-time' },
+                    to: { type: 'string', format: 'date-time' },
                 },
             },
         },
-    }, async (request) => {
+    }, async (request, reply) => {
         const { limit, offset, provider, status, from, to } = request.query as {
             limit?: number
             offset?: number
@@ -74,6 +91,12 @@ export async function metricsRoutes(app: FastifyInstance) {
             from?: string
             to?: string
         }
+        const validation = validateTimeRange(from, to)
+        if (validation) {
+            reply.status(400)
+            return reply.send({ error: validation, code: 'INVALID_TIME_RANGE' })
+        }
+
         const db = getMetricsDb()
         return queryRequests(db, { limit, offset, provider, status, from, to })
     })
@@ -86,7 +109,7 @@ export async function metricsRoutes(app: FastifyInstance) {
             params: {
                 type: 'object',
                 properties: {
-                    compareId: { type: 'string' },
+                    compareId: { type: 'string', minLength: 1, maxLength: compareIdMaxLength, pattern: safeTokenPattern },
                 },
                 required: ['compareId'],
             },
@@ -121,4 +144,24 @@ export async function metricsRoutes(app: FastifyInstance) {
             return reply.send({ error: 'Dashboard 页面未找到。', code: 'DASHBOARD_NOT_FOUND' })
         }
     })
+}
+
+function validateTimeRange(from?: string, to?: string): string | null {
+    const fromTime = parseIsoDateTime(from)
+    const toTime = parseIsoDateTime(to)
+
+    if (from && fromTime === null) return 'from 必须是合法的 ISO 8601 日期时间'
+    if (to && toTime === null) return 'to 必须是合法的 ISO 8601 日期时间'
+    if (fromTime !== null && toTime !== null && fromTime > toTime) return 'from 不能晚于 to'
+
+    return null
+}
+
+function parseIsoDateTime(value?: string): number | null {
+    if (!value) return null
+
+    const timestamp = Date.parse(value)
+    if (!Number.isFinite(timestamp)) return null
+
+    return timestamp
 }
