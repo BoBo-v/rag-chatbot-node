@@ -50,6 +50,7 @@ export const config = {
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
     defaultModel: process.env.DEFAULT_MODEL || 'qwen3:8b',
     port: numberFromEnv('PORT', 3001),
+    bodyLimitBytes: Math.max(1024, numberFromEnv('BODY_LIMIT_BYTES', 4 * 1024 * 1024)),
     apiKey: process.env.API_KEY || '',
     corsOrigins: listFromEnv('CORS_ORIGIN', ['http://localhost:3000', 'http://127.0.0.1:3000']),
     embeddingModel: process.env.EMBEDDING_MODEL || 'nomic-embed-text',

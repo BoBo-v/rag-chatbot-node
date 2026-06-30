@@ -15,7 +15,10 @@ import { AppError, toErrorResponse } from './utils/errors'
 import { recordHttpAccessLog } from './utils/httpAccessLog'
 
 export function buildApp(options: { logger?: boolean } = {}) {
-    const app = Fastify({ logger: options.logger ?? true })
+    const app = Fastify({
+        logger: options.logger ?? true,
+        bodyLimit: config.bodyLimitBytes,
+    })
     const requestStartedAt = new WeakMap<object, number>()
 
     app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } })
