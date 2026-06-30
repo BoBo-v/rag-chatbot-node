@@ -40,7 +40,7 @@ function vectorBackendFromEnv(): 'sqlite' | 'qdrant' {
     return raw === 'qdrant' ? 'qdrant' : 'sqlite'
 }
 
-const chunkMaxLen = Math.max(100, numberFromEnv('CHUNK_MAX_LEN', 700))
+const chunkMaxLen = Math.min(3000, Math.max(100, numberFromEnv('CHUNK_MAX_LEN', 700)))
 const chunkOverlap = Math.min(
     chunkMaxLen - 1,
     Math.max(0, numberFromEnv('CHUNK_OVERLAP', 100))
@@ -69,7 +69,8 @@ export const config = {
     ragVectorCandidateLimit: Math.max(100, Math.floor(numberFromEnv('RAG_VECTOR_CANDIDATE_LIMIT', 1000))),
     chunkMaxLen,
     chunkOverlap,
-    maxFileChunks: Math.max(1, Math.floor(numberFromEnv('MAX_FILE_CHUNKS', 2000))),
+    maxExtractedTextChars: Math.min(5_000_000, Math.max(1, Math.floor(numberFromEnv('MAX_EXTRACTED_TEXT_CHARS', 2_000_000)))),
+    maxFileChunks: Math.min(5000, Math.max(1, Math.floor(numberFromEnv('MAX_FILE_CHUNKS', 2000)))),
     embeddingBatchSize: Math.max(1, Math.floor(numberFromEnv('EMBEDDING_BATCH_SIZE', 16))),
     ollamaTimeoutMs: Math.max(1000, numberFromEnv('OLLAMA_TIMEOUT_MS', 900000)),
     visionModel: process.env.VISION_MODEL || 'qwen3-vl:2b',

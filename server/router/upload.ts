@@ -277,6 +277,20 @@ export async function uploadRoutes(app: FastifyInstance) {
                     markdown: vision.markdown,
                 })
             }
+            if (text.length > config.maxExtractedTextChars) {
+                const message = `文件解析后文本长度 ${text.length} 超过上限 ${config.maxExtractedTextChars}。`
+                publishUploadProgress(progressId, {
+                    phase: 'failed',
+                    percent: 100,
+                    message,
+                    loaded: buffer.length,
+                    total: buffer.length,
+                    done: true,
+                    error: 'EXTRACTED_TEXT_TOO_LARGE',
+                })
+                reply.status(400)
+                return reply.send({ error: message, code: 'EXTRACTED_TEXT_TOO_LARGE' })
+            }
 
             publishUploadProgress(progressId, {
                 phase: 'chunking',
