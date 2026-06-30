@@ -46,6 +46,7 @@ const supportedFileExtensions = ['txt', 'md', 'pdf', 'png', 'jpg', 'jpeg', 'webp
 const safeIdPattern = '^[A-Za-z0-9_-]{1,80}$'
 const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
 const searchQueryMaxLength = 2000
+const filenameMaxLength = 255
 
 export async function uploadRoutes(app: FastifyInstance) {
     app.get('/api/upload/progress/:id', {
@@ -177,6 +178,19 @@ export async function uploadRoutes(app: FastifyInstance) {
                 })
                 reply.status(400)
                 return reply.send({ error: '请上传文件。', code: 'UPLOAD_FILE_REQUIRED' })
+            }
+
+            if (file.filename.length > filenameMaxLength) {
+                const message = `文件名不能超过 ${filenameMaxLength} 个字符。`
+                publishUploadProgress(progressId, {
+                    phase: 'failed',
+                    percent: 100,
+                    message,
+                    done: true,
+                    error: 'FILENAME_TOO_LONG',
+                })
+                reply.status(400)
+                return reply.send({ error: message, code: 'FILENAME_TOO_LONG' })
             }
 
             const ext = file.filename.split('.').pop()?.toLowerCase()
