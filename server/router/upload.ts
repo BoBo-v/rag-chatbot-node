@@ -286,6 +286,21 @@ export async function uploadRoutes(app: FastifyInstance) {
                 return reply.send({ error: '文件中没有解析到可读取文本。', code: 'NO_READABLE_TEXT' })
             }
 
+            if (chunks.length > config.maxFileChunks) {
+                const message = `文件切分后得到 ${chunks.length} 个文本块，超过单文件上限 ${config.maxFileChunks}。`
+                publishUploadProgress(progressId, {
+                    phase: 'failed',
+                    percent: 100,
+                    message,
+                    loaded: buffer.length,
+                    total: buffer.length,
+                    done: true,
+                    error: 'TOO_MANY_CHUNKS',
+                })
+                reply.status(400)
+                return reply.send({ error: message, code: 'TOO_MANY_CHUNKS' })
+            }
+
             publishUploadProgress(progressId, {
                 phase: 'embedding',
                 percent: 82,

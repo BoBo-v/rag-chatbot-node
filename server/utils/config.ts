@@ -69,6 +69,7 @@ export const config = {
     ragVectorCandidateLimit: Math.max(100, Math.floor(numberFromEnv('RAG_VECTOR_CANDIDATE_LIMIT', 1000))),
     chunkMaxLen,
     chunkOverlap,
+    maxFileChunks: Math.max(1, Math.floor(numberFromEnv('MAX_FILE_CHUNKS', 2000))),
     embeddingBatchSize: Math.max(1, Math.floor(numberFromEnv('EMBEDDING_BATCH_SIZE', 16))),
     ollamaTimeoutMs: Math.max(1000, numberFromEnv('OLLAMA_TIMEOUT_MS', 900000)),
     visionModel: process.env.VISION_MODEL || 'qwen3-vl:2b',
