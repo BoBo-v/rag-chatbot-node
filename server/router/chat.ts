@@ -8,6 +8,7 @@ import { AppError } from '../utils/errors'
 import { estimateTokens } from '../utils/tokenEstimator'
 import { computeCost, parsePricingFromEnv } from '../utils/pricing'
 import { recordMetric } from '../utils/metricsCollector'
+import { hideRagCitationsInUnifiedStream } from '../llm/stream'
 
 const envPricingTable = parsePricingFromEnv(process.env.PRICING_TABLE || '')
 const chatMessageMaxCount = 50
@@ -127,10 +128,13 @@ export async function chatRoutes(app: FastifyInstance) {
                 })
             }
 
-            const stream = await provider.streamChat({
+            const providerStream = await provider.streamChat({
                 model,
                 messages,
             })
+            const stream = ragEnabled && !config.ragShowCitations
+                ? hideRagCitationsInUnifiedStream(providerStream)
+                : providerStream
 
             const inputChars = messages.reduce((sum, message) => sum + message.content.length, 0)
             const lastMessage = body.messages[body.messages.length - 1]
@@ -491,7 +495,9 @@ async function buildRagContext(body: ChatRequestBody): Promise<{
 
     return {
         enabled: shouldUseRag,
-        prompt: shouldUseRag && results.length > 0 ? buildRagSystemPrompt(results) : '',
+        prompt: shouldUseRag && results.length > 0
+            ? buildRagSystemPrompt(results, config.ragShowCitations)
+            : '',
         results,
     }
 }
@@ -537,7 +543,7 @@ function toSearchResultResponse(result: SearchResult) {
     }
 }
 
-function buildRagSystemPrompt(chunks: SearchResult[]): string {
+function buildRagSystemPrompt(chunks: SearchResult[], showCitations: boolean): string {
     const context = chunks
         .map(chunk => {
             const page = chunk.pageNumber ? `, page=${chunk.pageNumber}` : ''
@@ -548,6 +554,16 @@ function buildRagSystemPrompt(chunks: SearchResult[]): string {
         })
         .join('\n---\n')
 
+    const citationRules = showCitations
+        ? [
+            '5. 每条主要结论后标注文件名和 chunk 编号，例如：[test.pdf chunk 2]。引用原文必须能直接证明该结论。',
+            '6. 输出前检查每个引用，确保对应材料能直接支持紧邻的结论。',
+        ]
+        : [
+            '5. 回答正文不要输出文件名、chunk 编号、source、引用列表或方括号引用标记。引用材料仍是事实依据，必须逐条核对后再回答。',
+            '6. 输出前检查每条主要结论，确保引用材料能直接支持该结论，但不要把内部核对过程和来源标记展示给用户。',
+        ]
+
     return [
         '你是一个严格的知识库摘录助手，不是常识问答助手。',
         '必须遵守以下规则：',
@@ -555,14 +571,16 @@ function buildRagSystemPrompt(chunks: SearchResult[]): string {
         '2. 材料没有直接回答的子问题，必须在“知识库未提供的信息”中写“知识库没有提供这部分信息”，并注明缺少的是哪部分。只要存在一个未回答子问题，就禁止在该部分写“无”。',
         '3. 询问“哪些风险、原因、影响或结论”时，材料必须明确列出对应风险、原因、影响或结论才算有答案。材料列出安全措施不等于列出了安全风险，禁止根据措施反推。',
         '4. 如果有标题直接匹配问题主题的专门小节，只使用该小节回答；该小节有几条并列项目，就按原顺序近似原文输出几条，不得遗漏、合并、扩写或混入其他小节内容。',
-        '5. 每条主要结论后标注文件名和 chunk 编号，例如：[test.pdf chunk 2]。引用原文必须能直接证明该结论。',
-        '6. 输出前删除材料中没有明确出现的风险名称、攻击类型、目的、效果和解释。',
+        ...citationRules,
+        '7. 输出前删除材料中没有明确出现的风险名称、攻击类型、目的、效果和解释。',
         '',
         '回答格式：',
         '### 知识库未提供的信息',
         '未回答的子问题或“无”。',
         '### 知识库明确提供的信息',
-        '按专门小节原有项目逐条摘录并引用。',
+        showCitations
+            ? '按专门小节原有项目逐条摘录，并在每条后标注文件名和 chunk 编号。'
+            : '按专门小节原有项目逐条摘录，不显示文件名、chunk 编号或其他引用标记。',
         '',
         '引用材料：',
         context,

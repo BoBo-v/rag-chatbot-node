@@ -25,6 +25,135 @@ export function chatErrorLine(error: string): Uint8Array {
     })
 }
 
+export function hideRagCitationsInUnifiedStream(stream: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+    const reader = stream.getReader()
+    const decoder = new TextDecoder()
+    const citationFilter = new RagCitationFilter()
+    let buffer = ''
+
+    return new ReadableStream({
+        async start(controller) {
+            const emitFilteredText = (text: string) => {
+                const filtered = citationFilter.push(text)
+                if (filtered) controller.enqueue(chatTextLine(filtered))
+            }
+
+            const flushCitationFilter = () => {
+                const remaining = citationFilter.flush()
+                if (remaining) controller.enqueue(chatTextLine(remaining))
+            }
+
+            const handleLine = (line: string) => {
+                if (!line.trim()) return
+
+                const parsed = JSON.parse(line) as {
+                    message?: { content?: string }
+                    done?: boolean
+                    error?: string
+                }
+
+                if (parsed.message?.content) emitFilteredText(parsed.message.content)
+                if (parsed.error) controller.enqueue(chatErrorLine(parsed.error))
+                if (parsed.done) {
+                    flushCitationFilter()
+                    controller.enqueue(chatDoneLine())
+                }
+            }
+
+            try {
+                while (true) {
+                    const { value, done } = await reader.read()
+                    if (done) break
+
+                    buffer += decoder.decode(value, { stream: true })
+                    const lines = buffer.split('\n')
+                    buffer = lines.pop() ?? ''
+
+                    for (const line of lines) handleLine(line)
+                }
+
+                buffer += decoder.decode()
+                if (buffer.trim()) handleLine(buffer)
+                flushCitationFilter()
+                controller.close()
+            } catch (err) {
+                controller.enqueue(chatErrorLine(err instanceof Error ? err.message : 'Citation filter failed'))
+                controller.close()
+            } finally {
+                reader.releaseLock()
+            }
+        },
+    })
+}
+
+class RagCitationFilter {
+    private pendingBracket = ''
+
+    push(text: string): string {
+        let output = ''
+
+        for (const char of text) {
+            if (!this.pendingBracket) {
+                if (char === '[') {
+                    this.pendingBracket = char
+                } else {
+                    output += char
+                }
+                continue
+            }
+
+            this.pendingBracket += char
+
+            const headingIndex = this.findMarkdownHeadingIndex()
+            if (headingIndex >= 0) {
+                output += this.pendingBracket.slice(headingIndex)
+                this.pendingBracket = ''
+                continue
+            }
+
+            if (char === ']') {
+                if (!this.isCitationMarker(this.pendingBracket)) output += this.pendingBracket
+                this.pendingBracket = ''
+                continue
+            }
+
+            if (char === '\n') {
+                if (this.isCitationMarker(this.pendingBracket)) {
+                    output += '\n'
+                } else {
+                    output += this.pendingBracket
+                }
+                this.pendingBracket = ''
+                continue
+            }
+
+            if (this.pendingBracket.length > 500) {
+                output += this.pendingBracket
+                this.pendingBracket = ''
+            }
+        }
+
+        return output
+    }
+
+    flush(): string {
+        const remaining = this.isCitationMarker(this.pendingBracket) ? '' : this.pendingBracket
+        this.pendingBracket = ''
+        return remaining
+    }
+
+    private isCitationMarker(value: string): boolean {
+        return /(?:\.md\b|\bchunk\s*(?:[=,:]\s*)?\d+\b|\bsource\s*:)/i.test(value)
+    }
+
+    private findMarkdownHeadingIndex(): number {
+        if (!this.isCitationMarker(this.pendingBracket)) return -1
+
+        const match = /#{2,6}\s/.exec(this.pendingBracket)
+        return match?.index ?? -1
+    }
+}
+
 export function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), timeoutMs)

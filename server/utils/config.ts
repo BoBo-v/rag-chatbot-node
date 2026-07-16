@@ -62,6 +62,7 @@ export const config = {
     anthropicDefaultModel: process.env.ANTHROPIC_DEFAULT_MODEL || 'claude-sonnet-4-5',
     ragMode: ragModeFromEnv(),
     ragEnabled: booleanFromEnv('RAG_ENABLED', true),
+    ragShowCitations: booleanFromEnv('RAG_SHOW_CITATIONS', false),
     ragTopK: Math.min(20, Math.max(1, Math.floor(numberFromEnv('RAG_TOP_K', 5)))),
     ragMinScore: numberFromEnv('RAG_MIN_SCORE', 0.55),
     ragVectorWeight: numberFromEnv('RAG_VECTOR_WEIGHT', 0.8),
