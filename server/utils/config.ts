@@ -40,18 +40,36 @@ function vectorBackendFromEnv(): 'sqlite' | 'qdrant' {
     return raw === 'qdrant' ? 'qdrant' : 'sqlite'
 }
 
+function logLevelFromEnv(): 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent' {
+    const raw = process.env.LOG_LEVEL?.trim().toLowerCase()
+    if (raw && ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'].includes(raw)) {
+        return raw as 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent'
+    }
+    return 'info'
+}
+
+function logRemoteAddressFromEnv(): 'none' | 'masked' | 'full' {
+    const raw = process.env.LOG_REMOTE_ADDRESS?.trim().toLowerCase()
+    if (raw === 'masked' || raw === 'full') return raw
+    return 'none'
+}
+
 const chunkMaxLen = Math.min(3000, Math.max(100, numberFromEnv('CHUNK_MAX_LEN', 700)))
 const chunkOverlap = Math.min(
     chunkMaxLen - 1,
     Math.max(0, numberFromEnv('CHUNK_OVERLAP', 100))
 )
+const globalApiKey = process.env.API_KEY || ''
+const logQueryEnabled = booleanFromEnv('LOG_QUERY_ENABLED', false)
+const explicitLogQueryApiKey = process.env.LOG_QUERY_API_KEY || ''
+const useLegacyApiKeyForLogs = logQueryEnabled && !explicitLogQueryApiKey && Boolean(globalApiKey)
 
 export const config = {
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
     defaultModel: process.env.DEFAULT_MODEL || 'qwen3:8b',
     port: numberFromEnv('PORT', 3001),
     bodyLimitBytes: Math.max(1024, numberFromEnv('BODY_LIMIT_BYTES', 4 * 1024 * 1024)),
-    apiKey: process.env.API_KEY || '',
+    apiKey: useLegacyApiKeyForLogs ? '' : globalApiKey,
     corsOrigins: listFromEnv('CORS_ORIGIN', ['http://localhost:3000', 'http://127.0.0.1:3000']),
     embeddingModel: process.env.EMBEDDING_MODEL || 'nomic-embed-text',
     openaiApiKey: process.env.OPENAI_API_KEY || '',
@@ -85,5 +103,19 @@ export const config = {
     defaultTenantId: process.env.DEFAULT_TENANT_ID || 'default',
     defaultProjectId: process.env.DEFAULT_PROJECT_ID || 'default',
     defaultOwnerUserId: process.env.DEFAULT_OWNER_USER_ID || 'local',
+    observabilityDbPath: process.env.OBSERVABILITY_DB_PATH || 'server/data/observability.sqlite',
+    logLevel: logLevelFromEnv(),
+    logQueryEnabled,
+    logQueryApiKey: explicitLogQueryApiKey || (useLegacyApiKeyForLogs ? globalApiKey : ''),
+    logQueryUsesLegacyApiKey: useLegacyApiKeyForLogs,
+    logQuestionPreview: booleanFromEnv('LOG_QUESTION_PREVIEW', false),
+    logRemoteAddress: logRemoteAddressFromEnv(),
+    logQueueMaxSize: Math.min(100_000, Math.max(100, Math.floor(numberFromEnv('LOG_QUEUE_MAX_SIZE', 5000)))),
+    logFlushIntervalMs: Math.min(60_000, Math.max(500, Math.floor(numberFromEnv('LOG_FLUSH_INTERVAL_MS', 5000)))),
+    logWriteRetryCount: Math.min(10, Math.max(0, Math.floor(numberFromEnv('LOG_WRITE_RETRY_COUNT', 3)))),
+    logContextMaxChars: Math.min(10_000, Math.max(100, Math.floor(numberFromEnv('LOG_CONTEXT_MAX_CHARS', 2000)))),
+    logHttpRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_HTTP_RETENTION_DAYS', 30)))),
+    logAiRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_AI_RETENTION_DAYS', 90)))),
+    logEventRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_EVENT_RETENTION_DAYS', 90)))),
     metricsRetentionDays: numberFromEnv('METRICS_RETENTION_DAYS', 30),
 }
