@@ -42,7 +42,13 @@ server/
     upload.ts            知识库上传、文件管理、向量库状态、搜索
     chat.ts              聊天、RAG 上下文预览、厂商/模型查询
     metrics.ts           调用指标接口和 dashboard 页面
-    system.ts            健康检查、HTTP 访问日志
+    logs.ts              结构化日志查询和 requestId 详情
+    system.ts            健康检查
+  observability/
+    collector.ts         有界队列、批量写入、重试和每日清理
+    store.ts             独立观测数据库和旧指标迁移
+    queries.ts           日志筛选、游标分页和聚合查询
+    privacy.ts           路由、IP、错误和上下文脱敏
   llm/
     ollamaProvider.ts    Ollama 对话流
     openaiProvider.ts    OpenAI 兼容接口
@@ -54,8 +60,7 @@ server/
     embedding.ts         embedding 调用和重试
     chunker.ts           文本切块
     vectorStore.ts       SQLite 向量库、FTS、检索
-    metricsStore.ts      调用指标存储
-    metricsCollector.ts  指标采集与清理
+    metricsStore.ts      AI 调用指标兼容查询
     errors.ts            错误分类
 ```
 
@@ -120,6 +125,8 @@ http://127.0.0.1:3001/docs
 http://127.0.0.1:3001/api/metrics/dashboard
 ```
 
+需要先设置 `LOG_QUERY_ENABLED=true` 并提供有效的日志查询密钥。优先使用 `LOG_QUERY_API_KEY`；迁移期间可暂时回退到旧 `API_KEY`。
+
 ## 常用脚本
 
 ```powershell
@@ -127,12 +134,14 @@ npm run dev:server
 npm run typecheck
 npm run verify
 npm run verify:http
+npm run verify:observability
 ```
 
 - `dev:server`：启动后端开发服务，使用 `tsx watch`
 - `typecheck`：TypeScript 静态检查
 - `verify`：本地逻辑验证，包括 chunker、向量库、去重、混合检索、中文 FTS 等
 - `verify:http`：HTTP 接口级验证
+- `verify:observability`：独立观测库、旧指标迁移、游标分页和脱敏验证
 
 如果 `npm run verify` 报 SQLite 文件 `EBUSY`，通常是后端进程正在占用 `server/data/vector-store.sqlite`。先停止后端再跑验证。
 
@@ -174,6 +183,7 @@ VISION_MODEL=qwen3-vl:2b
 OLLAMA_TIMEOUT_MS=900000
 UPLOAD_DIR=server/data/uploads
 VECTOR_STORE_PATH=server/data/vector-store.sqlite
+OBSERVABILITY_DB_PATH=server/data/observability.sqlite
 
 RAG_MODE=auto
 RAG_TOP_K=5
@@ -196,6 +206,18 @@ QDRANT_DISTANCE=Cosine
 DEFAULT_TENANT_ID=default
 DEFAULT_PROJECT_ID=default
 DEFAULT_OWNER_USER_ID=local
+
+LOG_LEVEL=info
+LOG_QUERY_ENABLED=false
+LOG_QUERY_API_KEY=
+LOG_QUESTION_PREVIEW=false
+LOG_REMOTE_ADDRESS=none
+LOG_QUEUE_MAX_SIZE=5000
+LOG_FLUSH_INTERVAL_MS=5000
+LOG_WRITE_RETRY_COUNT=3
+LOG_HTTP_RETENTION_DAYS=30
+LOG_AI_RETENTION_DAYS=90
+LOG_EVENT_RETENTION_DAYS=90
 ```
 
 说明：
@@ -204,6 +226,11 @@ DEFAULT_OWNER_USER_ID=local
 - `OLLAMA_TIMEOUT_MS=900000` 是 900 秒，主要为了本地视觉模型慢的问题
 - `EMBEDDING_MODEL` 建议中文知识库使用 `bge-m3`
 - `VISION_MODEL` 用于图片识别入库
+- `LOG_QUERY_ENABLED=true` 且存在有效日志查询密钥时才会注册日志查询接口和 Dashboard
+- `LOG_QUERY_API_KEY` 只保护日志查询；`API_KEY` 非空时会保护所有非公开业务接口
+- 兼容迁移：开启日志但尚未设置 `LOG_QUERY_API_KEY` 时，旧 `API_KEY` 暂时只作为日志密钥使用；建议尽快将其移动到 `LOG_QUERY_API_KEY` 并清空 `API_KEY`
+- HTTP 日志只保存路由模板，不保存带查询参数的完整 URL
+- 问题预览和访问 IP 默认不记录；错误堆栈只输出到经过脱敏的 Pino 日志
 - `.env` 修改后必须重启后端才生效
 
 ## Qdrant 向量后端
@@ -219,7 +246,8 @@ QDRANT_COLLECTION=knowledge_chunks
 ```
 
 切换后：
-- SQLite 仍保存 files/chunks 文本、FTS、指标和业务元数据
+- SQLite 向量库仍保存 files/chunks 文本、FTS 和业务元数据
+- AI 指标和 HTTP 日志保存在独立的 `OBSERVABILITY_DB_PATH`
 - Qdrant 保存 chunk 向量和 payload，用于向量召回
 - `/api/search`、`/api/chat/context`、`/api/chat` 的前端调用方式不变
 - 如已有 SQLite 知识库，需要调用 `POST /api/vector-store/reindex` 重建 Qdrant 索引
@@ -247,7 +275,7 @@ Authorization: Bearer your-api-key
 - `GET /api/health`
 - `/docs`
 - `GET /api/upload/progress/:id`
-- `GET /api/metrics/dashboard`
+- `GET /api/metrics/dashboard` 仅在日志查询已启用且配置 API Key 时注册；页面本身公开，数据接口仍需 API Key
 
 ## 图片知识库流程
 
@@ -557,7 +585,20 @@ GET /api/tags
 
 ## 指标和日志接口
 
-运行统计：
+以下接口仅在 `LOG_QUERY_ENABLED=true` 且存在有效日志查询密钥时注册。优先使用 `LOG_QUERY_API_KEY`；列表接口未指定时间时默认查询最近 24 小时。
+
+结构化日志：
+
+```http
+GET /api/logs/summary
+GET /api/logs/requests
+GET /api/logs/errors
+GET /api/logs/requests/:requestId
+```
+
+`/api/logs/requests` 和 `/api/logs/errors` 使用不透明游标分页，响应中的 `nextCursor` 原样传给下一页即可。错误接口只返回脱敏错误，不返回 stack 或 rawError。
+
+AI 运行统计兼容接口：
 
 ```http
 GET /api/metrics/summary
@@ -567,7 +608,7 @@ GET /api/metrics/compare/:compareId
 GET /api/metrics/dashboard
 ```
 
-HTTP 访问日志：
+最近 HTTP 访问日志兼容接口：
 
 ```http
 GET /api/http-logs?limit=30
@@ -581,6 +622,9 @@ GET /api/http-logs?limit=30
 - RAG 是否启用
 - 命中了多少知识库上下文
 - 哪个接口慢
+- 同一个 `requestId` 对应的 HTTP 请求、AI 调用和应用事件
+
+所有响应都会返回 `X-Request-Id`。用户反馈问题时可提供该值进行精确查询。旧 AI 指标迁移到独立观测库时，`request_id` 保持 `NULL`，不会伪造关联，也不会迁移旧问题预览和原始错误。
 
 ## 前端接入建议
 
