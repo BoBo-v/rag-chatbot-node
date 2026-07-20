@@ -36,6 +36,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;padd
 .pagination{display:flex;justify-content:center;gap:8px;margin-top:12px;align-items:center}.pagination button{padding:5px 12px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer}.pagination button:disabled{opacity:.5;cursor:default}.pagination span{font-size:13px;color:#6b7280}.empty{text-align:center;padding:28px;color:#6b7280;font-size:13px}.cost{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .error-list .error-item{padding:8px 10px;border-bottom:1px solid #f3f4f6;display:flex;gap:12px;align-items:center;font-size:13px}.error-list .error-item .time{color:#6b7280;white-space:nowrap;min-width:140px}.error-list .error-item .msg{flex:1;color:#dc2626;word-break:break-word}.request-detail{max-width:360px;color:#6b7280;font-size:12px;line-height:1.4;word-break:break-word}.request-detail strong{color:#374151;font-weight:500}.request-more{margin-top:4px}.request-more summary{cursor:pointer;color:#4f46e5}.request-more pre{white-space:pre-wrap;word-break:break-word;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:8px;margin-top:6px;max-height:180px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:#374151}.http-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.http-code.ok{color:#047857}.http-code.error{color:#b91c1c}
 .api-key-prompt{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000}.api-key-prompt .dialog{background:#fff;border-radius:12px;padding:24px;max-width:400px;width:90%}.api-key-prompt input{width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:6px;margin:10px 0;font-size:14px}.api-key-prompt button{padding:8px 20px;background:#4f46e5;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px}
+.request-dialog{width:min(760px,92vw);max-height:80vh;border:0;border-radius:8px;padding:0;box-shadow:0 20px 60px rgba(0,0,0,.25)}.request-dialog::backdrop{background:rgba(0,0,0,.45)}.request-dialog-header{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid #e5e7eb}.request-dialog-header h3{font-size:16px}.request-dialog-close{width:32px;height:32px;border:1px solid #d1d5db;background:#fff;border-radius:6px;font-size:20px;line-height:1;cursor:pointer}.request-dialog-body{padding:18px;overflow:auto;max-height:calc(80vh - 65px)}.request-dialog-body pre{white-space:pre-wrap;word-break:break-word;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px;font-size:12px;line-height:1.5}.request-detail-button{padding:4px 9px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#374151;cursor:pointer}.request-detail-button:hover{background:#f3f4f6}
 @media(max-width:768px){.chart-row,.feedback-grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -43,8 +44,8 @@ table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;padd
 <div id="apiKeyPrompt" class="api-key-prompt" style="display:none">
   <div class="dialog">
     <h3 style="margin-bottom:8px">需要 API Key</h3>
-    <p style="font-size:13px;color:#6b7280;margin-bottom:10px">请输入后端 API Key 以查看运行统计。</p>
-    <input id="apiKeyInput" type="password" placeholder="API Key" onkeydown="if(event.key==='Enter')saveApiKey()">
+    <p style="font-size:13px;color:#6b7280;margin-bottom:10px">请输入 LOG_QUERY_API_KEY 以查看运行统计。</p>
+    <input id="apiKeyInput" type="password" placeholder="LOG_QUERY_API_KEY" onkeydown="if(event.key==='Enter')saveApiKey()">
     <div style="text-align:right;margin-top:10px"><button onclick="saveApiKey()">连接</button></div>
   </div>
 </div>
@@ -88,8 +89,13 @@ table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;padd
 
 <div class="section"><h2>厂商 / 模型明细</h2><table><thead><tr><th>Provider</th><th>Model</th><th>Requests</th><th>Success</th><th>平均延迟</th><th>P95 延迟</th><th>Tokens</th><th>Cost</th></tr></thead><tbody id="providerTable"></tbody></table></div>
 <div class="section"><h2>最近错误</h2><div class="error-list" id="errorList"><div class="empty">加载中...</div></div></div>
-<div class="section"><h2>最近请求</h2><table><thead><tr><th>时间</th><th>厂商</th><th>模型</th><th>状态</th><th>延迟</th><th>Token</th><th>成本</th><th>问题 / 错误</th></tr></thead><tbody id="requestTable"></tbody></table><div class="pagination"><button id="prevBtn" onclick="changePage(-1)" disabled>上一页</button><span id="pageInfo">-</span><button id="nextBtn" onclick="changePage(1)">下一页</button></div></div>
-<div class="section"><h2>最近 HTTP 请求</h2><table><thead><tr><th>时间</th><th>ReqId</th><th>Method</th><th>URL</th><th>Status</th><th>耗时</th><th>Host</th><th>IP</th></tr></thead><tbody id="httpLogTable"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody></table></div>
+<div class="section"><h2>最近请求</h2><table><thead><tr><th>时间</th><th>RequestId</th><th>厂商</th><th>模型</th><th>状态</th><th>延迟</th><th>Token</th><th>成本</th><th>问题 / 错误</th><th>详情</th></tr></thead><tbody id="requestTable"></tbody></table><div class="pagination"><button id="prevBtn" onclick="changePage(-1)" disabled>上一页</button><span id="pageInfo">-</span><button id="nextBtn" onclick="changePage(1)">下一页</button></div></div>
+<div class="section"><h2>最近 HTTP 请求</h2><table><thead><tr><th>时间</th><th>RequestId</th><th>Method</th><th>Route</th><th>Status</th><th>耗时</th><th>IP</th></tr></thead><tbody id="httpLogTable"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody></table></div>
+
+<dialog id="requestDialog" class="request-dialog">
+  <div class="request-dialog-header"><h3 id="requestDialogTitle">请求详情</h3><button class="request-dialog-close" onclick="closeRequestDetail()" title="关闭" aria-label="关闭">&times;</button></div>
+  <div id="requestDialogBody" class="request-dialog-body"><div class="empty">加载中...</div></div>
+</dialog>
 
 <script>
 const API_BASE = '/api/metrics'
@@ -180,9 +186,10 @@ function formatTokens(value) { if (value == null || value === 0) return '-'; if 
 function providerClass(provider) { if (provider === 'openai') return 'openai'; if (provider === 'anthropic') return 'anthropic'; return 'ollama' }
 function statusClass(status) { return status || 'unknown' }
 function statusLabel(status) { return ({ success: '成功', failed: '失败', stream_error: '流式错误', client_aborted: '客户端中断' })[status] || status || '-' }
+function isRequestId(value) { return typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value) }
 function escapeHtml(value) { return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') }
 function formatTime(timestamp) { if (!timestamp) return '-'; return new Date(timestamp).toLocaleString() }
-function compactError(row) { return row.error_message || row.error_code || row.raw_error || (row.status !== 'success' ? row.status : '') }
+function compactError(row) { return row.error_message || row.error_code || (row.status !== 'success' ? row.status : '') }
 function formatRequestDetail(row) {
   const parts = []
   if (row.question_preview) parts.push(`<div><strong>问题</strong>：${escapeHtml(row.question_preview)}</div>`)
@@ -190,7 +197,6 @@ function formatRequestDetail(row) {
   if (error) parts.push(`<div><strong>错误</strong>：${escapeHtml(error)}</div>`)
   if (row.rag_enabled) parts.push(`<div><strong>RAG</strong>：${row.rag_hit_count || 0} hits / ${row.rag_prompt_chars || 0} chars</div>`)
   if (row.is_timeout) parts.push('<div><strong>Timeout</strong>：yes</div>')
-  if (row.raw_error && row.raw_error !== error) parts.push(`<details class="request-more"><summary>原始错误</summary><pre>${escapeHtml(row.raw_error)}</pre></details>`)
   return parts.length ? parts.join('') : '-'
 }
 function statusCodeClass(statusCode) { return statusCode >= 400 ? 'error' : 'ok' }
@@ -242,23 +248,34 @@ async function loadErrors() {
 async function loadHttpLogs() {
   const data = await fetchJson('/api/http-logs?limit=30', 'http-logs')
   const rows = data?.rows || []
-  document.getElementById('httpLogTable').innerHTML = rows.length ? rows.map(row => `<tr><td>${formatTime(row.timestamp)}</td><td>${escapeHtml(row.id)}</td><td>${escapeHtml(row.method)}</td><td>${escapeHtml(row.url)}</td><td><span class="http-code ${statusCodeClass(row.statusCode)}">${row.statusCode}</span></td><td>${formatMs(row.responseTimeMs)}</td><td>${escapeHtml(row.host)}</td><td>${escapeHtml(row.remoteAddress)}</td></tr>`).join('') : '<tr><td colspan="8" class="empty">暂无 HTTP 请求记录</td></tr>'
+  document.getElementById('httpLogTable').innerHTML = rows.length ? rows.map(row => `<tr><td>${formatTime(row.timestamp)}</td><td class="http-code">${escapeHtml(row.id)}</td><td>${escapeHtml(row.method)}</td><td>${escapeHtml(row.route)}</td><td><span class="http-code ${statusCodeClass(row.statusCode)}">${row.statusCode}</span></td><td>${formatMs(row.responseTimeMs)}</td><td>${escapeHtml(row.remoteAddress)}</td></tr>`).join('') : '<tr><td colspan="7" class="empty">暂无 HTTP 请求记录</td></tr>'
 }
 function renderErrors(rows) {
   const container = document.getElementById('errorList')
   if (!rows.length) { container.innerHTML = '<div class="empty">暂无错误记录</div>'; return }
-  container.innerHTML = rows.map(row => `<div class="error-item"><span class="time">${formatTime(row.timestamp)}</span><span class="provider-tag ${providerClass(row.provider)}">${escapeHtml(row.provider)}</span><span>${escapeHtml(row.model)}</span><span class="status ${statusClass(row.status)}">${statusLabel(row.status)}</span><span class="msg">${escapeHtml(row.error_message || row.error_code || '-')}</span><span>${formatMs(row.latency_ms)}</span></div>${row.raw_error ? `<div class="error-item" style="padding-top:0;font-size:12px;color:#6b7280"><span class="time"></span><span class="msg" style="color:#92400e;word-break:break-all">原始错误：${escapeHtml(row.raw_error)}</span></div>` : ''}`).join('')
+  container.innerHTML = rows.map(row => `<div class="error-item"><span class="time">${formatTime(row.timestamp)}</span><span class="provider-tag ${providerClass(row.provider)}">${escapeHtml(row.provider)}</span><span>${escapeHtml(row.model)}</span><span class="status ${statusClass(row.status)}">${statusLabel(row.status)}</span><span class="msg">${escapeHtml(row.error_message || row.error_code || '-')}</span><span>${formatMs(row.latency_ms)}</span></div>`).join('')
 }
 async function loadRequests() {
   const params = new URLSearchParams({ ...getTimeRange(), limit: PAGE_SIZE, offset: currentPage * PAGE_SIZE })
   const data = await fetchJson(`${API_BASE}/requests?${params}`, 'requests')
   if (!data) return
-  document.getElementById('requestTable').innerHTML = (data.rows || []).length ? data.rows.map(row => `<tr><td>${formatTime(row.timestamp)}</td><td><span class="provider-tag ${providerClass(row.provider)}">${escapeHtml(row.provider)}</span></td><td>${escapeHtml(row.model)}</td><td><span class="status ${statusClass(row.status)}">${statusLabel(row.status)}</span></td><td>${formatMs(row.latency_ms)}</td><td>${formatTokens((row.est_input_tokens || 0) + (row.est_output_tokens || 0))}</td><td class="cost">${formatCost(row.est_cost_usd)}</td><td><div class="request-detail">${formatRequestDetail(row)}</div></td></tr>`).join('') : '<tr><td colspan="8" class="empty">暂无请求记录</td></tr>'
+  document.getElementById('requestTable').innerHTML = (data.rows || []).length ? data.rows.map(row => `<tr><td>${formatTime(row.timestamp)}</td><td class="http-code">${escapeHtml(row.request_id)}</td><td><span class="provider-tag ${providerClass(row.provider)}">${escapeHtml(row.provider)}</span></td><td>${escapeHtml(row.model)}</td><td><span class="status ${statusClass(row.status)}">${statusLabel(row.status)}</span></td><td>${formatMs(row.latency_ms)}</td><td>${formatTokens((row.est_input_tokens || 0) + (row.est_output_tokens || 0))}</td><td class="cost">${formatCost(row.est_cost_usd)}</td><td><div class="request-detail">${formatRequestDetail(row)}</div></td><td>${isRequestId(row.request_id) ? `<button class="request-detail-button" onclick="showRequestDetail('${row.request_id}')">查看</button>` : '-'}</td></tr>`).join('') : '<tr><td colspan="10" class="empty">暂无请求记录</td></tr>'
   const totalPages = Math.ceil(data.total / PAGE_SIZE)
   document.getElementById('pageInfo').textContent = `第 ${currentPage + 1} 页 / 共 ${totalPages || 1} 页`
   document.getElementById('prevBtn').disabled = currentPage <= 0
   document.getElementById('nextBtn').disabled = currentPage >= totalPages - 1
 }
+async function showRequestDetail(requestId) {
+  if (!requestId) return
+  const dialog = document.getElementById('requestDialog')
+  document.getElementById('requestDialogTitle').textContent = `请求详情 ${requestId}`
+  document.getElementById('requestDialogBody').innerHTML = '<div class="empty">加载中...</div>'
+  dialog.showModal()
+  const data = await fetchJson(`/api/logs/requests/${encodeURIComponent(requestId)}`, 'request-detail')
+  if (!data) { document.getElementById('requestDialogBody').innerHTML = '<div class="empty">详情加载失败</div>'; return }
+  document.getElementById('requestDialogBody').innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`
+}
+function closeRequestDetail() { document.getElementById('requestDialog').close() }
 function changePage(delta) { currentPage = Math.max(0, currentPage + delta); loadRequests() }
 function setAutoRefreshButton(enabled) {
   const button = document.getElementById('autoRefreshBtn')

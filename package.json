@@ -7,6 +7,7 @@
     "dev:server": "tsx watch server/index.ts",
     "verify": "tsx server/scripts/verify.ts",
     "verify:http": "tsx server/scripts/verifyHttp.ts",
+    "verify:observability": "tsx server/scripts/verifyObservability.ts",
     "typecheck": "tsc --noEmit"
   },
   "author": "",

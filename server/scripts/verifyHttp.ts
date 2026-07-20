@@ -10,13 +10,19 @@ function assert(condition: unknown, message: string): asserts condition {
 async function main() {
     const port = Number(process.env.HTTP_VERIFY_PORT || 3230)
     const apiKey = 'verify-api-key'
+    const logQueryApiKey = 'verify-log-query-api-key'
     const tempDir = await mkdtemp(path.join(tmpdir(), 'node-fastify-http-'))
     const uploadPath = path.join(tempDir, 'verify.txt')
     let app: FastifyInstance | null = null
 
     process.env.PORT = String(port)
     process.env.API_KEY = apiKey
+    process.env.LOG_QUERY_API_KEY = logQueryApiKey
     process.env.VECTOR_STORE_PATH = path.join(tempDir, 'vector-store.sqlite')
+    process.env.OBSERVABILITY_DB_PATH = path.join(tempDir, 'observability.sqlite')
+    process.env.LOG_QUERY_ENABLED = 'true'
+    process.env.LOG_QUESTION_PREVIEW = 'false'
+    process.env.LOG_REMOTE_ADDRESS = 'none'
     process.env.EMBEDDING_BATCH_SIZE = '1'
     process.env.OPENAI_API_KEY = ''
     process.env.ANTHROPIC_API_KEY = ''
@@ -33,6 +39,13 @@ async function main() {
         assert(unauthorized.status === 401, `expected 401 without api key, got ${unauthorized.status}`)
         const unauthorizedBody = await unauthorized.json() as { code?: string }
         assert(unauthorizedBody.code === 'UNAUTHORIZED', `unauthorized should include code: ${JSON.stringify(unauthorizedBody)}`)
+
+        const unauthorizedLogs = await fetch(`http://127.0.0.1:${port}/api/logs/summary`)
+        assert(unauthorizedLogs.status === 401, `logs should require api key, got ${unauthorizedLogs.status}`)
+        const businessKeyOnLogs = await fetch(`http://127.0.0.1:${port}/api/logs/summary`, {
+            headers: authHeaders(apiKey),
+        })
+        assert(businessKeyOnLogs.status === 401, `business API key must not authorize log queries: ${businessKeyOnLogs.status}`)
 
         const corsRejected = await fetch(`http://127.0.0.1:${port}/api/files`, {
             headers: { Origin: 'http://localhost:5999', ...authHeaders(apiKey) },
@@ -68,6 +81,7 @@ async function main() {
             chatMissingProviderConfig.body.code === 'OPENAI_NOT_CONFIGURED',
             `chat provider config error should include code: ${JSON.stringify(chatMissingProviderConfig.body)}`
         )
+        assert(isUuid(chatMissingProviderConfig.requestId), `chat should return X-Request-Id: ${chatMissingProviderConfig.requestId}`)
 
         const swagger = await fetchJson<{ info?: { title?: string } }>(`http://127.0.0.1:${port}/docs/json`)
         assert(swagger.info?.title, 'swagger json should be public and valid')
@@ -104,6 +118,62 @@ async function main() {
             { headers: authHeaders(apiKey) }
         )
         assert(search.results.length >= 1, `search should return results: ${JSON.stringify(search)}`)
+
+        const requestProbe = await fetch(`http://127.0.0.1:${port}/api/search?q=http-verify-9527&topK=3&minScore=0`, {
+            headers: authHeaders(apiKey),
+        })
+        assert(requestProbe.ok, `request probe failed: ${requestProbe.status}`)
+        const requestProbeId = requestProbe.headers.get('x-request-id')
+        assert(isUuid(requestProbeId), `regular response should return X-Request-Id: ${requestProbeId}`)
+        await requestProbe.text()
+
+        const { flushObservabilityForTest } = await import('../observability/collector.js')
+        flushObservabilityForTest()
+
+        const logSummary = await fetchJson<{
+            http: { totalRequests: number }
+            ai: { totalRequests: number }
+            collector: { droppedLogCount: number; lastFlushError: string | null }
+        }>(`http://127.0.0.1:${port}/api/logs/summary`, { headers: logAuthHeaders(logQueryApiKey) })
+        assert(logSummary.http.totalRequests >= 1, `log summary should include HTTP requests: ${JSON.stringify(logSummary)}`)
+        assert(logSummary.ai.totalRequests >= 1, `log summary should include AI requests: ${JSON.stringify(logSummary)}`)
+        assert(logSummary.collector.droppedLogCount === 0, `logs should not be dropped: ${JSON.stringify(logSummary)}`)
+
+        const requestLogs = await fetchJson<{
+            rows: Array<{ id: string; route: string; remote_address: string | null }>
+            nextCursor: string | null
+        }>(`http://127.0.0.1:${port}/api/logs/requests?limit=100`, { headers: logAuthHeaders(logQueryApiKey) })
+        const searchLog = requestLogs.rows.find(row => row.id === requestProbeId)
+        assert(searchLog?.route === '/api/search', `HTTP log should store route template: ${JSON.stringify(searchLog)}`)
+        assert(searchLog.remote_address === null, `remote address should be disabled: ${JSON.stringify(searchLog)}`)
+
+        const badCursor = await fetchJsonError(`http://127.0.0.1:${port}/api/logs/requests?cursor=invalid`, {
+            headers: logAuthHeaders(logQueryApiKey),
+        })
+        assert(badCursor.status === 400, `invalid log cursor should return 400: ${JSON.stringify(badCursor)}`)
+        assert(badCursor.body.code === 'INVALID_LOG_QUERY', `invalid cursor should include code: ${JSON.stringify(badCursor)}`)
+
+        const requestDetail = await fetchJson<{
+            request: { id: string } | null
+            aiInvocations: Array<Record<string, unknown>>
+            events: Array<Record<string, unknown>>
+        }>(`http://127.0.0.1:${port}/api/logs/requests/${chatMissingProviderConfig.requestId}`, {
+            headers: logAuthHeaders(logQueryApiKey),
+        })
+        assert(requestDetail.request?.id === chatMissingProviderConfig.requestId, `request detail should include HTTP request: ${JSON.stringify(requestDetail)}`)
+        assert(requestDetail.aiInvocations.length === 1, `request detail should link AI invocation: ${JSON.stringify(requestDetail)}`)
+        assert(requestDetail.aiInvocations[0].question_preview === null, 'question preview should be disabled')
+        assert(!('raw_error' in requestDetail.aiInvocations[0]), 'request detail must not expose raw_error')
+
+        const errors = await fetchJson<{ rows: Array<Record<string, unknown>> }>(
+            `http://127.0.0.1:${port}/api/logs/errors?limit=100`,
+            { headers: logAuthHeaders(logQueryApiKey) }
+        )
+        assert(errors.rows.length >= 1, `error query should return sanitized errors: ${JSON.stringify(errors)}`)
+        assert(errors.rows.every(row => !('raw_error' in row) && !('stack' in row)), 'errors must not expose raw_error or stack')
+
+        const dashboard = await fetch(`http://127.0.0.1:${port}/api/metrics/dashboard`)
+        assert(dashboard.status === 200, `dashboard should be available when log query is enabled: ${dashboard.status}`)
 
         const statusBeforeReset = await fetchJson<{
             currentEmbeddingModel: string
@@ -193,7 +263,7 @@ async function main() {
 
         console.log(JSON.stringify({
             ok: true,
-            checks: ['auth', 'cors-error', 'not-found', 'search-validation', 'provider-error', 'swagger', 'providers', 'upload', 'search', 'vector-store-status', 'chat-context', 'vector-store-reindex', 'vector-store-reset'],
+            checks: ['auth', 'cors-error', 'not-found', 'search-validation', 'provider-error', 'request-id', 'log-auth', 'log-summary', 'log-route-template', 'log-cursor-validation', 'log-request-detail', 'log-error-redaction', 'dashboard', 'swagger', 'providers', 'upload', 'search', 'vector-store-status', 'chat-context', 'vector-store-reindex', 'vector-store-reset'],
         }))
     } finally {
         if (app) await app.close()
@@ -214,16 +284,26 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 async function fetchJsonError(url: string, init?: RequestInit): Promise<{
     status: number
     body: { error?: string; code?: string }
+    requestId: string | null
 }> {
     const res = await fetch(url, init)
     return {
         status: res.status,
         body: await res.json() as { error?: string; code?: string },
+        requestId: res.headers.get('x-request-id'),
     }
 }
 
 function authHeaders(apiKey: string): Record<string, string> {
     return { 'x-api-key': apiKey }
+}
+
+function logAuthHeaders(logQueryApiKey: string): Record<string, string> {
+    return { 'x-api-key': logQueryApiKey }
+}
+
+function isUuid(value: string | null): value is string {
+    return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
 }
 
 async function fileBlob(filePath: string): Promise<Blob> {
