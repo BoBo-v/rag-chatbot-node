@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
-import { getMetricsDb } from '../utils/vectorStore'
+import { getObservabilityDb } from '../observability/store'
 import {
     querySummary,
     queryProviders,
@@ -37,7 +37,7 @@ export async function metricsRoutes(app: FastifyInstance) {
             return reply.send({ error: validation, code: 'INVALID_TIME_RANGE' })
         }
 
-        const db = getMetricsDb()
+        const db = getObservabilityDb()
         return querySummary(db, { from, to })
     })
 
@@ -62,7 +62,7 @@ export async function metricsRoutes(app: FastifyInstance) {
             return reply.send({ error: validation, code: 'INVALID_TIME_RANGE' })
         }
 
-        const db = getMetricsDb()
+        const db = getObservabilityDb()
         return { providers: queryProviders(db, { from, to }) }
     })
 
@@ -98,7 +98,7 @@ export async function metricsRoutes(app: FastifyInstance) {
             return reply.send({ error: validation, code: 'INVALID_TIME_RANGE' })
         }
 
-        const db = getMetricsDb()
+        const db = getObservabilityDb()
         return queryRequests(db, { limit, offset, provider, status, from, to })
     })
 
@@ -117,7 +117,7 @@ export async function metricsRoutes(app: FastifyInstance) {
         },
     }, async (request, reply) => {
         const { compareId } = request.params as { compareId: string }
-        const db = getMetricsDb()
+        const db = getObservabilityDb()
         const result = queryCompare(db, compareId)
 
         if (!result) {

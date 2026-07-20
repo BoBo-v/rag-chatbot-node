@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { config } from './config'
-import { initMetricsTable } from './metricsStore'
 import { qdrantVectorIndex } from '../knowledge/qdrantVectorIndex'
 import type {
     AddFileInput,
@@ -92,14 +91,7 @@ const ftsIndexVersion = 2
 const embeddingCacheLimit = 5000
 let db: DatabaseSync | null = null
 let mutationQueue = Promise.resolve()
-let onDbReady: ((db: DatabaseSync) => void) | null = null
 const embeddingCache = new Map<string, { raw: string; embedding: number[] }>()
-
-export function setDbReadyCallback(cb: (db: DatabaseSync) => void): void {
-    onDbReady = cb
-    // If db already initialized, call immediately
-    if (db) cb(db)
-}
 
 export async function addFileWithChunks(input: AddFileInput): Promise<StoredFile> {
     return enqueueMutation(async () => {
@@ -414,10 +406,6 @@ export function closeVectorStore(): void {
     db = null
 }
 
-export function getMetricsDb(): DatabaseSync {
-    return getDb()
-}
-
 function getDb(): DatabaseSync {
     if (db) return db
 
@@ -460,18 +448,11 @@ function getDb(): DatabaseSync {
     ensureFileColumns(db)
     ensureChunkColumns(db)
     ensureFtsTable(db)
-    initMetricsTable(db)
-
     if (firstOpen) {
         db.exec('PRAGMA user_version = 1')
     }
 
     migrateLegacyJsonStore(db)
-
-    if (onDbReady) {
-        onDbReady(db)
-        onDbReady = null
-    }
 
     return db
 }

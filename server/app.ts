@@ -10,8 +10,7 @@ import { uploadRoutes } from './router/upload'
 import { metricsRoutes } from './router/metrics'
 import { config } from './utils/config'
 import { registerSchemas } from './utils/schemas'
-import { closeVectorStore, setDbReadyCallback } from './utils/vectorStore'
-import { startMetricsCollector, stopMetricsCollector } from './utils/metricsCollector'
+import { closeVectorStore } from './utils/vectorStore'
 import { AppError, toErrorResponse } from './utils/errors'
 import {
     recordApplicationEvent,
@@ -165,7 +164,6 @@ export function buildApp(options: { logger?: boolean } = {}) {
     })
     app.addHook('onClose', async () => {
         stopObservability()
-        stopMetricsCollector()
         closeVectorStore()
     })
     app.register(systemRoutes)
@@ -175,11 +173,6 @@ export function buildApp(options: { logger?: boolean } = {}) {
 
     app.register(swaggerUi, {
         routePrefix: '/docs',
-    })
-
-    // Start metrics collector when DB is first accessed
-    setDbReadyCallback((database) => {
-        startMetricsCollector(database)
     })
 
     return app

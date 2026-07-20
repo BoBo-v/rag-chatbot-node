@@ -117,5 +117,4 @@ export const config = {
     logHttpRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_HTTP_RETENTION_DAYS', 30)))),
     logAiRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_AI_RETENTION_DAYS', 90)))),
     logEventRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_EVENT_RETENTION_DAYS', 90)))),
-    metricsRetentionDays: numberFromEnv('METRICS_RETENTION_DAYS', 30),
 }

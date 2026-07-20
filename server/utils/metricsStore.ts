@@ -1,7 +1,8 @@
-import { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync } from 'node:sqlite'
 
 export interface MetricRow {
     id: string
+    request_id: string | null
     compare_id: string | null
     timestamp: string
     endpoint: string
@@ -15,8 +16,14 @@ export interface MetricRow {
     ended_at: string
     latency_ms: number
     rag_enabled: number
+    rag_mode: string
+    rag_top_k: number
+    rag_min_score: number
     rag_hit_count: number
+    rag_best_score: number | null
     rag_prompt_chars: number
+    embedding_model: string
+    prompt_version: string
     input_chars: number | null
     output_chars: number | null
     est_input_tokens: number | null
@@ -24,7 +31,6 @@ export interface MetricRow {
     est_cost_usd: number
     question_preview: string | null
     is_timeout: number
-    raw_error: string | null
 }
 
 export interface SummaryResult {
@@ -58,89 +64,8 @@ export interface CompareResult {
     requests: MetricRow[]
 }
 
-const CREATE_TABLE_SQL = `
-    CREATE TABLE IF NOT EXISTS ai_request_logs (
-        id                TEXT PRIMARY KEY,
-        compare_id        TEXT,
-        timestamp         TEXT NOT NULL,
-        endpoint          TEXT NOT NULL,
-        provider          TEXT NOT NULL,
-        model             TEXT NOT NULL,
-        status            TEXT NOT NULL,
-        status_code       INTEGER,
-        error_code        TEXT,
-        error_message     TEXT,
-        started_at        TEXT NOT NULL,
-        ended_at          TEXT NOT NULL,
-        latency_ms        INTEGER NOT NULL,
-        rag_enabled       INTEGER NOT NULL DEFAULT 0,
-        rag_hit_count     INTEGER NOT NULL DEFAULT 0,
-        rag_prompt_chars  INTEGER NOT NULL DEFAULT 0,
-        input_chars       INTEGER,
-        output_chars      INTEGER,
-        est_input_tokens  INTEGER,
-        est_output_tokens INTEGER,
-        est_cost_usd      REAL NOT NULL DEFAULT 0,
-        question_preview  TEXT,
-        is_timeout        INTEGER NOT NULL DEFAULT 0,
-        raw_error         TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON ai_request_logs(timestamp);
-    CREATE INDEX IF NOT EXISTS idx_metrics_provider ON ai_request_logs(provider);
-    CREATE INDEX IF NOT EXISTS idx_metrics_status ON ai_request_logs(status);
-    CREATE INDEX IF NOT EXISTS idx_metrics_compare_id ON ai_request_logs(compare_id);
-`
-
-export function initMetricsTable(db: DatabaseSync): void {
-    db.exec(CREATE_TABLE_SQL)
-
-    // Migration: add raw_error column if missing
-    const columns = db.prepare('PRAGMA table_info(ai_request_logs)').all() as Array<{ name: string }>
-    if (!columns.some(c => c.name === 'raw_error')) {
-        db.exec('ALTER TABLE ai_request_logs ADD COLUMN raw_error TEXT')
-    }
-}
-
-const INSERT_SQL = `
-    INSERT INTO ai_request_logs (
-        id, compare_id, timestamp, endpoint, provider, model,
-        status, status_code, error_code, error_message,
-        started_at, ended_at, latency_ms,
-        rag_enabled, rag_hit_count, rag_prompt_chars,
-        input_chars, output_chars,
-        est_input_tokens, est_output_tokens, est_cost_usd,
-        question_preview, is_timeout, raw_error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`
-
-export function insertMetrics(db: DatabaseSync, rows: MetricRow[]): void {
-    if (rows.length === 0) return
-
-    const stmt = db.prepare(INSERT_SQL)
-    db.exec('BEGIN')
-    try {
-        for (const row of rows) {
-            stmt.run(
-                row.id, row.compare_id, row.timestamp, row.endpoint, row.provider, row.model,
-                row.status, row.status_code, row.error_code, row.error_message,
-                row.started_at, row.ended_at, row.latency_ms,
-                row.rag_enabled, row.rag_hit_count, row.rag_prompt_chars,
-                row.input_chars, row.output_chars,
-                row.est_input_tokens, row.est_output_tokens, row.est_cost_usd,
-                row.question_preview, row.is_timeout, row.raw_error
-            )
-        }
-        db.exec('COMMIT')
-    } catch (err) {
-        db.exec('ROLLBACK')
-        throw err
-    }
-}
-
 export function querySummary(db: DatabaseSync, filters?: { from?: string; to?: string }): SummaryResult {
     const { where, params } = buildTimeFilter(filters)
-
     const row = db.prepare(`
         SELECT
             COUNT(*) AS totalRequests,
@@ -153,8 +78,8 @@ export function querySummary(db: DatabaseSync, filters?: { from?: string; to?: s
         ${where}
     `).get(...params) as {
         totalRequests: number
-        successCount: number
-        failedCount: number
+        successCount: number | null
+        failedCount: number | null
         avgLatencyMs: number | null
         totalEstTokens: number | null
         totalEstCostUsd: number | null
@@ -170,13 +95,14 @@ export function querySummary(db: DatabaseSync, filters?: { from?: string; to?: s
 
     const p50 = queryPercentile(db, 0.5, filters)
     const p95 = queryPercentile(db, 0.95, filters)
-
+    const successCount = row.successCount ?? 0
+    const failedCount = row.failedCount ?? 0
     return {
         totalRequests: row.totalRequests,
-        successCount: row.successCount,
-        failedCount: row.failedCount,
-        errorRate: row.totalRequests > 0 ? row.failedCount / row.totalRequests : 0,
-        avgLatencyMs: row.avgLatencyMs ? Math.round(row.avgLatencyMs) : null,
+        successCount,
+        failedCount,
+        errorRate: failedCount / row.totalRequests,
+        avgLatencyMs: row.avgLatencyMs === null ? null : Math.round(row.avgLatencyMs),
         p50LatencyMs: p50,
         p95LatencyMs: p95,
         totalEstTokens: row.totalEstTokens ?? 0,
@@ -186,7 +112,6 @@ export function querySummary(db: DatabaseSync, filters?: { from?: string; to?: s
 
 export function queryProviders(db: DatabaseSync, filters?: { from?: string; to?: string }): ProviderStat[] {
     const { where, params } = buildTimeFilter(filters)
-
     const rows = db.prepare(`
         SELECT
             provider,
@@ -216,7 +141,7 @@ export function queryProviders(db: DatabaseSync, filters?: { from?: string; to?:
         totalRequests: row.totalRequests,
         successCount: row.successCount,
         successRate: row.totalRequests > 0 ? roundTo(row.successCount / row.totalRequests, 4) : 0,
-        avgLatencyMs: row.avgLatencyMs ? Math.round(row.avgLatencyMs) : null,
+        avgLatencyMs: row.avgLatencyMs === null ? null : Math.round(row.avgLatencyMs),
         p95LatencyMs: queryPercentileForGroup(db, 0.95, row.provider, row.model, filters),
         totalEstTokens: row.totalEstTokens ?? 0,
         totalEstCostUsd: roundTo(row.totalEstCostUsd ?? 0, 4),
@@ -257,11 +182,11 @@ export function queryRequests(
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
     const limit = Math.min(Math.max(options.limit ?? 50, 1), 200)
     const offset = Math.max(options.offset ?? 0, 0)
-
-    const countRow = db.prepare(`SELECT COUNT(*) AS count FROM ai_request_logs ${where}`).get(...params) as unknown as { count: number }
+    const countRow = db.prepare(`SELECT COUNT(*) AS count FROM ai_request_logs ${where}`)
+        .get(...params) as { count: number }
     const rows = db.prepare(`
         SELECT * FROM ai_request_logs ${where}
-        ORDER BY timestamp DESC
+        ORDER BY timestamp DESC, id DESC
         LIMIT ? OFFSET ?
     `).all(...params, limit, offset) as unknown as MetricRow[]
 
@@ -272,32 +197,22 @@ export function queryCompare(db: DatabaseSync, compareId: string): CompareResult
     const rows = db.prepare(`
         SELECT * FROM ai_request_logs
         WHERE compare_id = ?
-        ORDER BY timestamp ASC
+        ORDER BY timestamp ASC, id ASC
     `).all(compareId) as unknown as MetricRow[]
-
     if (rows.length === 0) return null
-
-    const totalCostUsd = rows.reduce((sum, row) => sum + row.est_cost_usd, 0)
 
     return {
         compareId,
         totalRequests: rows.length,
-        totalCostUsd: roundTo(totalCostUsd, 4),
+        totalCostUsd: roundTo(rows.reduce((sum, row) => sum + row.est_cost_usd, 0), 4),
         requests: rows,
     }
 }
 
-export function cleanupOldMetrics(db: DatabaseSync, retentionDays: number): number {
-    if (retentionDays <= 0) return 0
-
-    const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString()
-    const result = db.prepare('DELETE FROM ai_request_logs WHERE timestamp < ?').run(cutoff)
-    return Number(result.changes)
-}
-
 function queryPercentile(db: DatabaseSync, percentile: number, filters?: { from?: string; to?: string }): number | null {
     const { where, params } = buildTimeFilter(filters)
-    const countRow = db.prepare(`SELECT COUNT(*) AS count FROM ai_request_logs ${where}`).get(...params) as unknown as { count: number }
+    const countRow = db.prepare(`SELECT COUNT(*) AS count FROM ai_request_logs ${where}`)
+        .get(...params) as { count: number }
     if (countRow.count === 0) return null
 
     const index = Math.ceil(countRow.count * percentile) - 1
@@ -305,8 +220,7 @@ function queryPercentile(db: DatabaseSync, percentile: number, filters?: { from?
         SELECT latency_ms FROM ai_request_logs ${where}
         ORDER BY latency_ms ASC
         LIMIT 1 OFFSET ?
-    `).get(...params, Math.max(0, index)) as unknown as { latency_ms: number } | undefined
-
+    `).get(...params, Math.max(0, index)) as { latency_ms: number } | undefined
     return row?.latency_ms ?? null
 }
 
@@ -319,7 +233,6 @@ function queryPercentileForGroup(
 ): number | null {
     const conditions = ['provider = ?', 'model = ?']
     const params: Array<string | number> = [provider, model]
-
     if (filters?.from) {
         conditions.push('timestamp >= ?')
         params.push(filters.from)
@@ -330,7 +243,8 @@ function queryPercentileForGroup(
     }
 
     const where = `WHERE ${conditions.join(' AND ')}`
-    const countRow = db.prepare(`SELECT COUNT(*) AS count FROM ai_request_logs ${where}`).get(...params) as unknown as { count: number }
+    const countRow = db.prepare(`SELECT COUNT(*) AS count FROM ai_request_logs ${where}`)
+        .get(...params) as { count: number }
     if (countRow.count === 0) return null
 
     const index = Math.ceil(countRow.count * percentile) - 1
@@ -338,15 +252,13 @@ function queryPercentileForGroup(
         SELECT latency_ms FROM ai_request_logs ${where}
         ORDER BY latency_ms ASC
         LIMIT 1 OFFSET ?
-    `).get(...params, Math.max(0, index)) as unknown as { latency_ms: number } | undefined
-
+    `).get(...params, Math.max(0, index)) as { latency_ms: number } | undefined
     return row?.latency_ms ?? null
 }
 
-function buildTimeFilter(filters?: { from?: string; to?: string }): { where: string; params: Array<string | number> } {
+function buildTimeFilter(filters?: { from?: string; to?: string }): { where: string; params: string[] } {
     const conditions: string[] = []
     const params: string[] = []
-
     if (filters?.from) {
         conditions.push('timestamp >= ?')
         params.push(filters.from)
@@ -355,7 +267,6 @@ function buildTimeFilter(filters?: { from?: string; to?: string }): { where: str
         conditions.push('timestamp <= ?')
         params.push(filters.to)
     }
-
     return {
         where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
         params,
