@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import multipart from '@fastify/multipart'
@@ -12,17 +13,60 @@ import { registerSchemas } from './utils/schemas'
 import { closeVectorStore, setDbReadyCallback } from './utils/vectorStore'
 import { startMetricsCollector, stopMetricsCollector } from './utils/metricsCollector'
 import { AppError, toErrorResponse } from './utils/errors'
-import { recordHttpAccessLog } from './utils/httpAccessLog'
+import {
+    recordApplicationEvent,
+    recordHttpRequest,
+    startObservability,
+    stopObservability,
+} from './observability/collector'
+import { routeTemplateFromRequest, safeErrorForLog, safeRemoteAddress } from './observability/privacy'
 
 export function buildApp(options: { logger?: boolean } = {}) {
+    startObservability()
     const app = Fastify({
-        logger: options.logger ?? true,
+        logger: options.logger === false ? false : {
+            level: config.logLevel,
+            redact: {
+                paths: [
+                    'req.headers.authorization',
+                    'req.headers.cookie',
+                    'req.headers["x-api-key"]',
+                    'request.headers.authorization',
+                    'request.headers.cookie',
+                    'request.headers["x-api-key"]',
+                    'headers.authorization',
+                    'headers.cookie',
+                    'headers["x-api-key"]',
+                    'apiKey',
+                    'openaiApiKey',
+                    'anthropicApiKey',
+                    'qdrantApiKey',
+                    'logQueryApiKey',
+                ],
+                censor: '[REDACTED]',
+            },
+            serializers: {
+                req(request) {
+                    return {
+                        method: request.method,
+                        path: pathOnly(request.url),
+                    }
+                },
+                res(reply) {
+                    return { statusCode: reply.statusCode }
+                },
+                err(error) {
+                    return safeErrorForLog(error)
+                },
+            },
+        },
+        genReqId: () => randomUUID(),
         bodyLimit: config.bodyLimitBytes,
     })
-    const requestStartedAt = new WeakMap<object, number>()
 
     app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } })
     app.register(cors, {
+        exposedHeaders: ['X-Request-Id'],
         origin: (origin, callback) => {
             if (!origin || config.corsOrigins.includes(origin)) {
                 callback(null, true)
@@ -61,7 +105,23 @@ export function buildApp(options: { logger?: boolean } = {}) {
     registerSchemas(app)
     app.setErrorHandler((err, request, reply) => {
         const response = toErrorResponse(err)
-        if (response.shouldLog) request.log.error(err)
+        if (response.shouldLog) {
+            request.log.error({
+                err,
+                event: 'http.request.failed',
+                errorCode: response.body.code,
+            })
+            recordApplicationEvent({
+                requestId: request.id,
+                level: 'error',
+                eventType: 'http.request.failed',
+                module: 'http',
+                operation: routeTemplateFromRequest(request),
+                statusCode: response.statusCode,
+                errorCode: response.body.code ?? null,
+                message: response.body.error,
+            })
+        }
         reply.status(response.statusCode)
         return reply.send(response.body)
     })
@@ -69,22 +129,26 @@ export function buildApp(options: { logger?: boolean } = {}) {
         reply.status(404)
         return reply.send({ error: '接口不存在，请检查请求路径和方法。', code: 'NOT_FOUND' })
     })
-    app.addHook('onRequest', async (request) => {
-        requestStartedAt.set(request, performance.now())
-    })
-    app.addHook('onResponse', async (request, reply) => {
-        const startedAt = requestStartedAt.get(request) ?? performance.now()
-        recordHttpAccessLog({
-            id: request.id,
-            timestamp: new Date().toISOString(),
-            method: request.method,
-            url: request.url,
-            host: request.headers.host ?? null,
-            remoteAddress: request.ip ?? null,
-            statusCode: reply.statusCode,
-            responseTimeMs: Math.round((performance.now() - startedAt) * 10) / 10,
-        })
-        requestStartedAt.delete(request)
+    app.addHook('onRequest', async (request, reply) => {
+        const startedAt = performance.now()
+        let recorded = false
+        const recordCompletedRequest = () => {
+            if (recorded) return
+            recorded = true
+            recordHttpRequest({
+                id: request.id,
+                timestamp: new Date().toISOString(),
+                method: request.method,
+                route: routeTemplateFromRequest(request),
+                remoteAddress: safeRemoteAddress(request.ip),
+                statusCode: reply.raw.statusCode,
+                responseTimeMs: Math.round((performance.now() - startedAt) * 10) / 10,
+            })
+        }
+
+        reply.raw.once('finish', recordCompletedRequest)
+        reply.raw.once('close', recordCompletedRequest)
+        reply.header('X-Request-Id', request.id)
     })
     app.addHook('preHandler', async (request, reply) => {
         if (!config.apiKey || isPublicRoute(request.url)) return
@@ -100,6 +164,7 @@ export function buildApp(options: { logger?: boolean } = {}) {
         return reply.send({ error: '未授权，请提供正确的 x-api-key 或 Authorization Bearer Token。', code: 'UNAUTHORIZED' })
     })
     app.addHook('onClose', async () => {
+        stopObservability()
         stopMetricsCollector()
         closeVectorStore()
     })
@@ -122,4 +187,9 @@ export function buildApp(options: { logger?: boolean } = {}) {
 
 function isPublicRoute(url: string): boolean {
     return url === '/api/health' || url.startsWith('/docs') || url.startsWith('/api/upload/progress/') || url === '/api/metrics/dashboard'
+}
+
+function pathOnly(url?: string): string {
+    if (!url) return '/'
+    return (url.split('?')[0] || '/').slice(0, 200)
 }

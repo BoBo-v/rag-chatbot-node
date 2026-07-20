@@ -7,8 +7,8 @@ import { getChatProvider, listChatProviders, type ChatProviderId } from '../llm'
 import { AppError } from '../utils/errors'
 import { estimateTokens } from '../utils/tokenEstimator'
 import { computeCost, parsePricingFromEnv } from '../utils/pricing'
-import { recordMetric } from '../utils/metricsCollector'
 import { hideRagCitationsInUnifiedStream } from '../llm/stream'
+import { recordAiRequest, recordApplicationEvent } from '../observability/collector'
 
 const envPricingTable = parsePricingFromEnv(process.env.PRICING_TABLE || '')
 const chatMessageMaxCount = 50
@@ -19,6 +19,7 @@ const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB]
 const safeTokenPattern = '^[A-Za-z0-9_-]+$'
 const modelNamePattern = '^[A-Za-z0-9._:/@+-]+$'
 const chatRoleValues = ['system', 'user', 'assistant']
+const ragPromptVersion = 'rag-fidelity-v1'
 
 interface ChatMessage {
     role: string
@@ -77,7 +78,17 @@ export async function chatRoutes(app: FastifyInstance) {
                 results: context.results.map(toSearchResultResponse),
             }
         } catch (err) {
-            request.log.error(err)
+            request.log.error({ err, event: 'rag.context.failed', errorCode: 'RAG_CONTEXT_FAILED' })
+            recordApplicationEvent({
+                requestId: request.id,
+                level: 'error',
+                eventType: 'rag.context.failed',
+                module: 'rag',
+                operation: 'context',
+                statusCode: 502,
+                errorCode: 'RAG_CONTEXT_FAILED',
+                message: 'RAG 上下文检索失败',
+            })
             reply.status(502)
             return reply.send({ error: 'RAG 上下文检索失败，请确认 Ollama embedding 服务和向量库状态正常。', code: 'RAG_CONTEXT_FAILED' })
         }
@@ -107,10 +118,14 @@ export async function chatRoutes(app: FastifyInstance) {
         const model = body.model || provider.info().defaultModel
         const startedAt = new Date().toISOString()
         const requestStart = performance.now()
-        const requestId = randomUUID()
+        const aiInvocationId = randomUUID()
 
         let ragEnabled = false
+        let ragMode = ragModeLabel(normalizeRagMode(body.rag ?? config.ragMode))
+        let ragTopK = parseBoundedNumber(body.topK, config.ragTopK, 1, 20)
+        let ragMinScore = parseBoundedNumber(body.minScore, config.ragMinScore, 0, 1)
         let ragHitCount = 0
+        let ragBestScore: number | null = null
         let ragPromptChars = 0
 
         try {
@@ -118,7 +133,11 @@ export async function chatRoutes(app: FastifyInstance) {
             const context = await buildRagContext(body)
 
             ragEnabled = context.enabled
+            ragMode = context.mode
+            ragTopK = context.topK
+            ragMinScore = context.minScore
             ragHitCount = context.results.length
+            ragBestScore = context.bestScore
             ragPromptChars = context.prompt.length
 
             if (context.prompt) {
@@ -138,7 +157,7 @@ export async function chatRoutes(app: FastifyInstance) {
 
             const inputChars = messages.reduce((sum, message) => sum + message.content.length, 0)
             const lastMessage = body.messages[body.messages.length - 1]
-            const questionPreview = lastMessage.content.slice(0, 200)
+            const questionPreview = config.logQuestionPreview ? lastMessage.content.slice(0, 200) : null
             const decoder = new TextDecoder()
             let lineBuffer = ''
             let metricRecorded = false
@@ -182,23 +201,30 @@ export async function chatRoutes(app: FastifyInstance) {
                 const estOutputTokens = estimateTokens('x'.repeat(log.outputChars))
                 const isStreamError = status === 'stream_error'
 
-                recordMetric({
-                    id: requestId,
+                recordAiRequest({
+                    id: aiInvocationId,
+                    requestId: request.id,
                     compareId: body.compareId ?? null,
                     timestamp: startedAt,
                     endpoint: '/api/chat',
                     provider: providerId,
                     model,
                     status,
-                    statusCode: null,
+                    statusCode: status === 'client_aborted' ? null : 200,
                     errorCode: isStreamError ? log.errorCode : null,
                     errorMessage: isStreamError ? log.errorMessage : null,
                     startedAt,
                     endedAt,
                     latencyMs,
                     ragEnabled,
+                    ragMode,
+                    ragTopK,
+                    ragMinScore,
                     ragHitCount,
+                    ragBestScore,
                     ragPromptChars,
+                    embeddingModel: config.embeddingModel,
+                    promptVersion: ragPromptVersion,
                     inputChars,
                     outputChars: log.outputChars,
                     estInputTokens,
@@ -206,7 +232,6 @@ export async function chatRoutes(app: FastifyInstance) {
                     estCostUsd: computeCost(providerId, model, estInputTokens, estOutputTokens, envPricingTable),
                     questionPreview,
                     isTimeout: false,
-                    rawError: isStreamError ? log.errorMessage : null,
                 })
             }
 
@@ -241,6 +266,7 @@ export async function chatRoutes(app: FastifyInstance) {
                 'Content-Type': 'application/x-ndjson',
                 'Cache-Control': 'no-cache',
                 Connection: 'keep-alive',
+                'X-Request-Id': request.id,
             })
             reply.raw.on('close', () => {
                 if (!reply.raw.writableEnded) finalizeMetric('client_aborted')
@@ -261,14 +287,15 @@ export async function chatRoutes(app: FastifyInstance) {
             }
             return
         } catch (err) {
-            request.log.error(err)
+            request.log.error({ err, event: 'chat.provider.failed', errorCode: 'MODEL_PROVIDER_FAILED' })
             const providerError = classifyChatProviderError(err)
             const endedAt = new Date().toISOString()
             const latencyMs = Math.round(performance.now() - requestStart)
             const isTimeout = err instanceof Error && err.name === 'AbortError'
 
-            recordMetric({
-                id: requestId,
+            recordAiRequest({
+                id: aiInvocationId,
+                requestId: request.id,
                 compareId: body.compareId ?? null,
                 timestamp: startedAt,
                 endpoint: '/api/chat',
@@ -282,16 +309,23 @@ export async function chatRoutes(app: FastifyInstance) {
                 endedAt,
                 latencyMs,
                 ragEnabled,
+                ragMode,
+                ragTopK,
+                ragMinScore,
                 ragHitCount,
+                ragBestScore,
                 ragPromptChars,
+                embeddingModel: config.embeddingModel,
+                promptVersion: ragPromptVersion,
                 inputChars: null,
                 outputChars: null,
                 estInputTokens: null,
                 estOutputTokens: null,
                 estCostUsd: 0,
-                questionPreview: body.messages[body.messages.length - 1]?.content?.slice(0, 200) ?? null,
+                questionPreview: config.logQuestionPreview
+                    ? body.messages[body.messages.length - 1]?.content?.slice(0, 200) ?? null
+                    : null,
                 isTimeout,
-                rawError: err instanceof Error ? err.message : String(err),
             })
 
             reply.status(providerError.statusCode as 400 | 502)
@@ -355,7 +389,17 @@ export async function chatRoutes(app: FastifyInstance) {
 
             return reply.send(await response.json())
         } catch (err) {
-            request.log.error(err)
+            request.log.error({ err, event: 'ollama.tags.failed', errorCode: 'OLLAMA_SERVICE_UNAVAILABLE' })
+            recordApplicationEvent({
+                requestId: request.id,
+                level: 'error',
+                eventType: 'ollama.tags.failed',
+                module: 'ollama',
+                operation: 'list_models',
+                statusCode: 502,
+                errorCode: 'OLLAMA_SERVICE_UNAVAILABLE',
+                message: '无法连接 Ollama 服务',
+            })
             reply.status(502)
             return reply.send({ error: '无法连接 Ollama 服务，请确认 Ollama 已启动。', code: 'OLLAMA_SERVICE_UNAVAILABLE' })
         }
@@ -466,11 +510,18 @@ async function buildRagContext(body: ChatRequestBody): Promise<{
     enabled: boolean
     prompt: string
     results: SearchResult[]
+    mode: string
+    topK: number
+    minScore: number
+    bestScore: number | null
 }> {
     const mode = normalizeRagMode(body.rag ?? config.ragMode)
+    const modeLabel = ragModeLabel(mode)
+    const topK = parseBoundedNumber(body.topK, config.ragTopK, 1, 20)
+    const minScore = parseBoundedNumber(body.minScore, config.ragMinScore, 0, 1)
 
     if (mode === false) {
-        return { enabled: false, prompt: '', results: [] }
+        return { enabled: false, prompt: '', results: [], mode: modeLabel, topK, minScore, bestScore: null }
     }
 
     const lastMessage = body.messages[body.messages.length - 1]
@@ -481,14 +532,14 @@ async function buildRagContext(body: ChatRequestBody): Promise<{
     try {
         const embeddings = await getEmbeddings([lastMessage.content])
         results = await search(embeddings[0], {
-            topK: parseBoundedNumber(body.topK, config.ragTopK, 1, 20),
-            minScore: parseBoundedNumber(body.minScore, config.ragMinScore, 0, 1),
+            topK,
+            minScore,
             fileId: body.fileId,
             query: lastMessage.content,
         })
     } catch (err) {
         if (forceRag) throw err
-        return { enabled: false, prompt: '', results: [] }
+        return { enabled: false, prompt: '', results: [], mode: modeLabel, topK, minScore, bestScore: null }
     }
 
     const shouldUseRag = forceRag ? results.length > 0 : shouldAutoUseRag(question, results)
@@ -499,12 +550,22 @@ async function buildRagContext(body: ChatRequestBody): Promise<{
             ? buildRagSystemPrompt(results, config.ragShowCitations)
             : '',
         results,
+        mode: modeLabel,
+        topK,
+        minScore,
+        bestScore: results[0]?.score ?? null,
     }
 }
 
 function normalizeRagMode(value: unknown): RagMode {
     if (value === true || value === 'true') return true
     if (value === false || value === 'false') return false
+    return 'auto'
+}
+
+function ragModeLabel(mode: RagMode): string {
+    if (mode === true) return 'true'
+    if (mode === false) return 'false'
     return 'auto'
 }
 

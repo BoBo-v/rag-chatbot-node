@@ -20,6 +20,7 @@ import {
 } from '../utils/vectorStore'
 import { config } from '../utils/config'
 import { classifyUploadError } from '../utils/errors'
+import { recordApplicationEvent } from '../observability/collector'
 import { isSupportedImageMime, parseImageWithVision } from '../utils/vision'
 
 const pdfParse = require('pdf-parse')
@@ -378,6 +379,23 @@ export async function uploadRoutes(app: FastifyInstance) {
                 total: buffer.length,
                 done: true,
             })
+            recordApplicationEvent({
+                requestId: request.id,
+                level: 'info',
+                eventType: 'upload.completed',
+                module: 'knowledge',
+                operation: 'upload',
+                statusCode: 200,
+                errorCode: null,
+                message: '文件上传并写入知识库完成',
+                context: {
+                    fileId: storedFile.id,
+                    size: buffer.length,
+                    chunkCount: chunkInputs.length,
+                    deduplicated: deduplicatedAfterRace,
+                    overwritten: Boolean(existingFile && overwrite),
+                },
+            })
             return reply.send({
                 file: storedFile,
                 chunks: chunkInputs.map(chunk => ({
@@ -396,7 +414,19 @@ export async function uploadRoutes(app: FastifyInstance) {
                 done: true,
                 error: uploadError.code,
             })
-            if (uploadError.statusCode >= 500) request.log.error(err)
+            if (uploadError.statusCode >= 500) {
+                request.log.error({ err, event: 'upload.failed', errorCode: uploadError.code })
+                recordApplicationEvent({
+                    requestId: request.id,
+                    level: 'error',
+                    eventType: 'upload.failed',
+                    module: 'knowledge',
+                    operation: 'upload',
+                    statusCode: uploadError.statusCode,
+                    errorCode: uploadError.code,
+                    message: uploadError.message,
+                })
+            }
             reply.status(uploadError.statusCode as 400 | 413 | 500 | 502)
             return reply.send({ error: uploadError.message, code: uploadError.code })
         }
@@ -502,6 +532,17 @@ export async function uploadRoutes(app: FastifyInstance) {
             return reply.send({ error: '文件不存在。', code: 'FILE_NOT_FOUND' })
         }
 
+        recordApplicationEvent({
+            requestId: request.id,
+            level: 'info',
+            eventType: 'file.deleted',
+            module: 'knowledge',
+            operation: 'delete_file',
+            statusCode: 200,
+            errorCode: null,
+            message: '知识库文件删除完成',
+            context: { fileId: params.id },
+        })
         return { ok: true }
     })
 
@@ -546,6 +587,17 @@ export async function uploadRoutes(app: FastifyInstance) {
         }
 
         const result = await resetVectorStore()
+        recordApplicationEvent({
+            requestId: request.id,
+            level: 'warn',
+            eventType: 'vector.reset.completed',
+            module: 'knowledge',
+            operation: 'reset',
+            statusCode: 200,
+            errorCode: null,
+            message: '向量库重置完成',
+            context: result,
+        })
         return {
             ok: true,
             ...result,
@@ -585,9 +637,37 @@ export async function uploadRoutes(app: FastifyInstance) {
                 return reply.send({ error: 'fileId 格式不正确。', code: 'INVALID_FILE_ID' })
             }
 
-            return await reindexVectorStore(body?.fileId)
+            const result = await reindexVectorStore(body?.fileId)
+            recordApplicationEvent({
+                requestId: request.id,
+                level: 'info',
+                eventType: 'vector.reindex.completed',
+                module: 'knowledge',
+                operation: 'reindex',
+                statusCode: 200,
+                errorCode: null,
+                message: '向量索引重建完成',
+                context: {
+                    fileId: body?.fileId ?? null,
+                    backend: result.backend,
+                    filesIndexed: result.filesIndexed,
+                    chunksIndexed: result.chunksIndexed,
+                    skipped: result.skipped,
+                },
+            })
+            return result
         } catch (err) {
-            request.log.error(err)
+            request.log.error({ err, event: 'vector.reindex.failed', errorCode: 'VECTOR_INDEX_REINDEX_FAILED' })
+            recordApplicationEvent({
+                requestId: request.id,
+                level: 'error',
+                eventType: 'vector.reindex.failed',
+                module: 'knowledge',
+                operation: 'reindex',
+                statusCode: 502,
+                errorCode: 'VECTOR_INDEX_REINDEX_FAILED',
+                message: '向量索引重建失败',
+            })
             reply.status(502)
             return reply.send({ error: '向量索引重建失败，请检查向量索引服务状态。', code: 'VECTOR_INDEX_REINDEX_FAILED' })
         }
@@ -712,7 +792,17 @@ export async function uploadRoutes(app: FastifyInstance) {
                 })),
             }
         } catch (err) {
-            request.log.error(err)
+            request.log.error({ err, event: 'rag.search.failed', errorCode: 'RAG_SEARCH_FAILED' })
+            recordApplicationEvent({
+                requestId: request.id,
+                level: 'error',
+                eventType: 'rag.search.failed',
+                module: 'rag',
+                operation: 'search',
+                statusCode: 502,
+                errorCode: 'RAG_SEARCH_FAILED',
+                message: 'RAG 检索失败',
+            })
             reply.status(502)
             return reply.send({ error: 'RAG 检索失败，请确认 Ollama embedding 服务和向量库状态正常。', code: 'RAG_SEARCH_FAILED' })
         }
