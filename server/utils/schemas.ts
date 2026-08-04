@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 
+const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+
 export function registerSchemas(app: FastifyInstance): void {
     app.addSchema({
         $id: 'ErrorResponse',
@@ -14,7 +16,7 @@ export function registerSchemas(app: FastifyInstance): void {
         $id: 'StoredFile',
         type: 'object',
         properties: {
-            id: { type: 'string', description: '文件 ID' },
+            id: { type: 'string', pattern: uuidPattern, description: '文件 ID' },
             filename: { type: 'string', description: '文件名' },
             mimeType: { type: 'string', description: '文件 MIME 类型' },
             size: { type: 'number', description: '文件大小，单位字节' },
@@ -32,8 +34,8 @@ export function registerSchemas(app: FastifyInstance): void {
         $id: 'ChunkDetail',
         type: 'object',
         properties: {
-            id: { type: 'string', description: 'chunk ID' },
-            fileId: { type: 'string', description: '所属文件 ID' },
+            id: { type: 'string', pattern: uuidPattern, description: 'chunk ID' },
+            fileId: { type: 'string', pattern: uuidPattern, description: '所属文件 ID' },
             filename: { type: 'string', description: '所属文件名' },
             chunkIndex: { type: 'number', description: 'chunk 序号' },
             text: { type: 'string', description: 'chunk 文本' },
@@ -49,7 +51,7 @@ export function registerSchemas(app: FastifyInstance): void {
         $id: 'FileDetail',
         type: 'object',
         properties: {
-            id: { type: 'string', description: '文件 ID' },
+            id: { type: 'string', pattern: uuidPattern, description: '文件 ID' },
             filename: { type: 'string', description: '文件名' },
             mimeType: { type: 'string', description: '文件 MIME 类型' },
             size: { type: 'number', description: '文件大小，单位字节' },
@@ -72,8 +74,8 @@ export function registerSchemas(app: FastifyInstance): void {
         $id: 'SearchResult',
         type: 'object',
         properties: {
-            id: { type: 'string', description: 'chunk ID' },
-            fileId: { type: 'string', description: '所属文件 ID' },
+            id: { type: 'string', pattern: uuidPattern, description: 'chunk ID' },
+            fileId: { type: 'string', pattern: uuidPattern, description: '所属文件 ID' },
             filename: { type: 'string', description: '所属文件名' },
             chunkIndex: { type: 'number', description: 'chunk 序号' },
             score: { type: 'number', description: '综合检索分数' },

@@ -89,6 +89,7 @@ interface LegacyVectorStoreData {
 const dbPath = path.resolve(process.cwd(), config.vectorStorePath)
 const ftsIndexVersion = 2
 const embeddingCacheLimit = 5000
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 let db: DatabaseSync | null = null
 let mutationQueue = Promise.resolve()
 const embeddingCache = new Map<string, { raw: string; embedding: number[] }>()
@@ -452,7 +453,8 @@ function getDb(): DatabaseSync {
         db.exec('PRAGMA user_version = 1')
     }
 
-    migrateLegacyJsonStore(db)
+    if (firstOpen) migrateLegacyJsonStore(db)
+    normalizeStoredIds(db)
 
     return db
 }
@@ -486,10 +488,13 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
 
+        const migratedFileIds = new Map<string, string>()
         for (const file of files) {
             if (!file.id || !file.filename) continue
+            const fileId = isUuid(file.id) ? file.id : randomUUID()
+            migratedFileIds.set(file.id, fileId)
             insertFile.run(
-                file.id,
+                fileId,
                 file.filename,
                 file.mimeType ?? 'application/octet-stream',
                 file.size ?? 0,
@@ -503,17 +508,14 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
             )
         }
 
-        const migratedFileIds = new Set(
-            (database.prepare('SELECT id FROM files').all() as Array<{ id: string }>).map(file => file.id)
-        )
-
         for (const chunk of chunks) {
             if (!chunk.fileId || !chunk.text || !Array.isArray(chunk.embedding)) continue
-            if (!migratedFileIds.has(chunk.fileId)) continue
-            const chunkId = chunk.id ?? randomUUID()
+            const fileId = migratedFileIds.get(chunk.fileId)
+            if (!fileId) continue
+            const chunkId = chunk.id && isUuid(chunk.id) ? chunk.id : randomUUID()
             insertChunk.run(
                 chunkId,
-                chunk.fileId,
+                fileId,
                 chunk.filename ?? '',
                 chunk.chunkIndex ?? 0,
                 chunk.text,
@@ -525,12 +527,67 @@ function migrateLegacyJsonStore(database: DatabaseSync): void {
             )
             upsertFtsChunk(database, {
                 id: chunkId,
-                fileId: chunk.fileId,
+                fileId,
                 filename: chunk.filename ?? '',
                 text: chunk.text,
             })
         }
 
+        database.exec('COMMIT')
+    } catch (err) {
+        database.exec('ROLLBACK')
+        throw err
+    }
+}
+
+function normalizeStoredIds(database: DatabaseSync): void {
+    const invalidFiles = (database.prepare(`
+        SELECT id, filename, mime_type, size, char_count, chunk_count, created_at,
+               content_hash, embedding_model, embedding_dim, chunker_version
+        FROM files
+    `).all() as unknown as FileRow[]).filter(file => !isUuid(file.id))
+    const invalidChunks = (database.prepare('SELECT id FROM chunks').all() as Array<{ id: string }>)
+        .filter(chunk => !isUuid(chunk.id))
+
+    if (invalidFiles.length === 0 && invalidChunks.length === 0) return
+
+    const insertFile = database.prepare(`
+        INSERT INTO files (
+            id, filename, mime_type, size, char_count, chunk_count, created_at, content_hash,
+            embedding_model, embedding_dim, chunker_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+    `)
+    const updateChunkFileId = database.prepare('UPDATE chunks SET file_id = ? WHERE file_id = ?')
+    const deleteFile = database.prepare('DELETE FROM files WHERE id = ?')
+    const restoreContentHash = database.prepare('UPDATE files SET content_hash = ? WHERE id = ?')
+    const updateChunkId = database.prepare('UPDATE chunks SET id = ? WHERE id = ?')
+
+    database.exec('BEGIN')
+    try {
+        for (const file of invalidFiles) {
+            const fileId = randomUUID()
+            insertFile.run(
+                fileId,
+                file.filename,
+                file.mime_type,
+                file.size,
+                file.char_count,
+                file.chunk_count,
+                file.created_at,
+                file.embedding_model,
+                file.embedding_dim,
+                file.chunker_version
+            )
+            updateChunkFileId.run(fileId, file.id)
+            deleteFile.run(file.id)
+            if (file.content_hash) restoreContentHash.run(file.content_hash, fileId)
+        }
+
+        for (const chunk of invalidChunks) {
+            updateChunkId.run(randomUUID(), chunk.id)
+        }
+
+        rebuildFtsIndex(database)
         database.exec('COMMIT')
     } catch (err) {
         database.exec('ROLLBACK')
@@ -688,8 +745,13 @@ function ensureFtsTable(database: DatabaseSync): void {
     const countRow = database.prepare('SELECT COUNT(*) AS count FROM chunks_fts').get() as { count: number }
     if (countRow.count > 0 && versionRow.user_version >= ftsIndexVersion) return
 
-    database.prepare('DELETE FROM chunks_fts').run()
+    rebuildFtsIndex(database)
 
+    database.exec(`PRAGMA user_version = ${ftsIndexVersion}`)
+}
+
+function rebuildFtsIndex(database: DatabaseSync): void {
+    database.prepare('DELETE FROM chunks_fts').run()
     const rows = selectAllChunkRows(database)
     for (const row of rows) {
         upsertFtsChunk(database, {
@@ -699,8 +761,6 @@ function ensureFtsTable(database: DatabaseSync): void {
             text: row.text,
         })
     }
-
-    database.exec(`PRAGMA user_version = ${ftsIndexVersion}`)
 }
 
 function upsertFtsChunk(
@@ -720,6 +780,10 @@ function legacyJsonPath(): string {
     }
 
     return `${dbPath}.json`
+}
+
+function isUuid(value: string): boolean {
+    return uuidPattern.test(value)
 }
 
 function selectSearchCandidateRows(fileId?: string, query?: string): FtsChunkRow[] {

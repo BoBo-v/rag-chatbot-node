@@ -1,5 +1,6 @@
 import {
     addFileWithChunks,
+    closeVectorStore,
     deleteFile,
     getFileByContentHash,
     getFileDetail,
@@ -572,12 +573,22 @@ async function verifyLegacyMigration() {
         }],
     }), 'utf-8')
 
-    const detail = await getFileDetail('legacy-file')
+    const migratedFile = (await listFiles()).find(file => file.filename === 'legacy.txt')
+    assert(Boolean(migratedFile), 'legacy migration should preserve the file')
+    if (!migratedFile) return
+
+    assert(isUuid(migratedFile.id), `legacy file ID should be normalized: ${migratedFile.id}`)
+    const detail = await getFileDetail(migratedFile.id)
     assert(detail?.chunks.length === 1, `legacy migration failed: ${JSON.stringify(detail)}`)
-    await deleteFile('legacy-file')
+    assert(isUuid(detail?.chunks[0]?.id ?? ''), `legacy chunk ID should be normalized: ${JSON.stringify(detail)}`)
+    assert(detail?.chunks[0]?.fileId === migratedFile.id, `legacy chunk should reference normalized file ID: ${JSON.stringify(detail)}`)
+    assert(await getFileDetail('legacy-file') === null, 'legacy file ID should no longer be stored')
+    await deleteFile(migratedFile.id)
+    closeVectorStore()
+    assert((await listFiles()).length === 0, 'legacy JSON should not be imported again after SQLite is created')
 }
 
-async function main() {
+export async function runVerification() {
     await verifyChunker()
     await verifyEmbeddingFastPath()
     await verifyUnifiedChatStreams()
@@ -616,6 +627,10 @@ async function main() {
     }))
 }
 
+function isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+}
+
 function streamFromText(parts: string[]): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder()
     return new ReadableStream({
@@ -652,8 +667,3 @@ async function readNdjsonObjects(stream: ReadableStream<Uint8Array>): Promise<Ar
 
     return result
 }
-
-main().catch(err => {
-    console.error(err)
-    process.exit(1)
-})

@@ -28,6 +28,27 @@ async function main() {
     process.env.ANTHROPIC_API_KEY = ''
 
     try {
+        await writeFile(path.join(tempDir, 'vector-store.json'), JSON.stringify({
+            files: [{
+                id: 'legacy-file',
+                filename: 'legacy.txt',
+                mimeType: 'text/plain',
+                size: 12,
+                charCount: 12,
+                chunkCount: 1,
+                createdAt: '2026-01-01T00:00:00.000Z',
+            }],
+            chunks: [{
+                id: 'legacy-chunk',
+                fileId: 'legacy-file',
+                filename: 'legacy.txt',
+                chunkIndex: 0,
+                text: 'legacy contract fixture',
+                embedding: [1, 0],
+                createdAt: '2026-01-01T00:00:00.000Z',
+            }],
+        }), 'utf-8')
+
         const { buildApp } = await import('../app.js')
         const instance = buildApp({ logger: false })
         app = instance
@@ -54,6 +75,26 @@ async function main() {
         const corsBody = await corsRejected.json() as { code?: string; error?: string }
         assert(corsBody.code === 'CORS_ORIGIN_NOT_ALLOWED', `cors rejection should include code: ${JSON.stringify(corsBody)}`)
         assert(Boolean(corsBody.error), 'cors rejection should include user-facing error')
+
+        const legacyFiles = await fetchJson<{ files: Array<{ id: string; filename: string }> }>(
+            `http://127.0.0.1:${port}/api/files`,
+            { headers: authHeaders(apiKey) }
+        )
+        const legacyFile = legacyFiles.files.find(file => file.filename === 'legacy.txt')
+        assert(Boolean(legacyFile), `legacy file should be listed: ${JSON.stringify(legacyFiles)}`)
+        assert(isUuid(legacyFile?.id ?? null), `listed legacy file should expose a UUID: ${JSON.stringify(legacyFile)}`)
+        const legacyDetail = await fetchJson<{ file: { id: string; chunks: Array<{ id: string; fileId: string }> } }>(
+            `http://127.0.0.1:${port}/api/files/${encodeURIComponent(legacyFile!.id)}`,
+            { headers: authHeaders(apiKey) }
+        )
+        assert(legacyDetail.file.id === legacyFile!.id, `listed file ID should resolve detail: ${JSON.stringify(legacyDetail)}`)
+        assert(isUuid(legacyDetail.file.chunks[0]?.id ?? null), `legacy chunk ID should be normalized: ${JSON.stringify(legacyDetail)}`)
+        assert(legacyDetail.file.chunks[0]?.fileId === legacyFile!.id, `legacy chunk should reference normalized file ID: ${JSON.stringify(legacyDetail)}`)
+        const legacyDelete = await fetchJson<{ ok: boolean }>(
+            `http://127.0.0.1:${port}/api/files/${encodeURIComponent(legacyFile!.id)}`,
+            { method: 'DELETE', headers: authHeaders(apiKey) }
+        )
+        assert(legacyDelete.ok, `normalized legacy file should be deletable: ${JSON.stringify(legacyDelete)}`)
 
         const notFound = await fetchJsonError(`http://127.0.0.1:${port}/api/not-exists`, {
             headers: authHeaders(apiKey),
@@ -263,7 +304,7 @@ async function main() {
 
         console.log(JSON.stringify({
             ok: true,
-            checks: ['auth', 'cors-error', 'not-found', 'search-validation', 'provider-error', 'request-id', 'log-auth', 'log-summary', 'log-route-template', 'log-cursor-validation', 'log-request-detail', 'log-error-redaction', 'dashboard', 'swagger', 'providers', 'upload', 'search', 'vector-store-status', 'chat-context', 'vector-store-reindex', 'vector-store-reset'],
+            checks: ['auth', 'cors-error', 'legacy-id-normalization', 'not-found', 'search-validation', 'provider-error', 'request-id', 'log-auth', 'log-summary', 'log-route-template', 'log-cursor-validation', 'log-request-detail', 'log-error-redaction', 'dashboard', 'swagger', 'providers', 'upload', 'search', 'vector-store-status', 'chat-context', 'vector-store-reindex', 'vector-store-reset'],
         }))
     } finally {
         if (app) await app.close()

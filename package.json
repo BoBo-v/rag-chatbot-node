@@ -5,7 +5,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev:server": "tsx watch server/index.ts",
-    "verify": "tsx server/scripts/verify.ts",
+    "verify": "tsx server/scripts/verifyRunner.ts",
     "verify:http": "tsx server/scripts/verifyHttp.ts",
     "verify:observability": "tsx server/scripts/verifyObservability.ts",
     "typecheck": "tsc --noEmit"
