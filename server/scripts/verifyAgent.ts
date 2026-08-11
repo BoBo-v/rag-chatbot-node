@@ -4,6 +4,8 @@ import { AgentEventWriter } from '../agent/eventStream'
 import { AgentRunner } from '../agent/runner'
 import { AgentModelQueue } from '../agent/modelQueue'
 import { calculatorTool } from '../agent/calculatorTool'
+import { Temporal } from '@js-temporal/polyfill'
+import { createDateTimeTool } from '../agent/dateTimeTool'
 import { getAgentProfile } from '../agent/profiles'
 import { ToolRegistry } from '../agent/toolRegistry'
 import {
@@ -264,6 +266,84 @@ async function verifyToolRegistryAndCalculator() {
     assert(forbidden.code === 'TOOL_NOT_ALLOWED', `unknown tool should be rejected: ${forbidden.code}`)
 }
 
+async function verifyDateTimeTool() {
+    const fixedNow = Temporal.Instant.from('2026-08-11T04:00:00Z')
+    const registry = new ToolRegistry([createDateTimeTool(() => fixedNow)])
+    const execute = registry.executorFor(['datetime'])
+    const invoke = async (argumentsValue: Record<string, unknown>) => execute({
+        id: 'datetime-call',
+        name: 'datetime',
+        arguments: argumentsValue,
+    }, new AbortController().signal)
+
+    const nowResult = await invoke({ operation: 'now', timeZone: 'Asia/Shanghai' })
+    const nowPayload = JSON.parse(nowResult.content) as any
+    assert(!nowResult.isError && nowPayload.result.iso.startsWith('2026-08-11T12:00:00'), `datetime now failed: ${nowResult.content}`)
+    assert(nowPayload.result.dayOfWeekName === '星期二', `datetime weekday failed: ${nowResult.content}`)
+
+    const converted = await invoke({
+        operation: 'convert_timezone',
+        dateTime: '2026-03-08T01:30:00',
+        timeZone: 'America/New_York',
+        targetTimeZone: 'Asia/Shanghai',
+    })
+    const convertedPayload = JSON.parse(converted.content) as any
+    assert(convertedPayload.result.iso.startsWith('2026-03-08T14:30:00'), `timezone conversion failed: ${converted.content}`)
+
+    const calendarDay = await invoke({
+        operation: 'add_duration',
+        dateTime: '2026-03-07T12:00:00',
+        timeZone: 'America/New_York',
+        days: 1,
+    })
+    const calendarPayload = JSON.parse(calendarDay.content) as any
+    assert(calendarPayload.result.iso.startsWith('2026-03-08T12:00:00.000-04:00'), `DST calendar-day add failed: ${calendarDay.content}`)
+
+    const exactHours = await invoke({
+        operation: 'add_duration',
+        dateTime: '2026-03-07T12:00:00',
+        timeZone: 'America/New_York',
+        hours: 24,
+    })
+    const exactPayload = JSON.parse(exactHours.content) as any
+    assert(exactPayload.result.iso.startsWith('2026-03-08T13:00:00.000-04:00'), `DST exact-hour add failed: ${exactHours.content}`)
+
+    const difference = await invoke({
+        operation: 'difference',
+        startDateTime: '2026-08-11T12:00:00+08:00',
+        endDateTime: '2026-08-11T05:30:00Z',
+    })
+    const differencePayload = JSON.parse(difference.content) as any
+    assert(differencePayload.totalSeconds === 5400 && differencePayload.relation === 'end_after_start', `datetime difference failed: ${difference.content}`)
+
+    const inspected = await invoke({ operation: 'inspect', dateTime: '2024-02-29T12:00:00Z' })
+    const inspectedPayload = JSON.parse(inspected.content) as any
+    assert(inspectedPayload.result.inLeapYear === true && inspectedPayload.result.dayOfWeek === 4, `datetime inspect failed: ${inspected.content}`)
+
+    const epoch = await invoke({ operation: 'from_epoch', epochValue: 0, epochUnit: 'seconds', timeZone: 'Asia/Shanghai' })
+    const epochPayload = JSON.parse(epoch.content) as any
+    assert(epochPayload.result.iso.startsWith('1970-01-01T08:00:00'), `datetime epoch failed: ${epoch.content}`)
+
+    const ambiguous = await invoke({ operation: 'inspect', dateTime: '2026-08-11T12:00:00' })
+    assert(ambiguous.isError && ambiguous.content.includes('IANA'), `local time without zone should fail: ${JSON.stringify(ambiguous)}`)
+    const invalidZone = await invoke({ operation: 'now', timeZone: 'CST' })
+    assert(invalidZone.isError && invalidZone.content.includes('不接受 CST'), `ambiguous zone should fail: ${JSON.stringify(invalidZone)}`)
+    const conflictingOffset = await invoke({
+        operation: 'inspect',
+        dateTime: '2026-08-11T12:00:00+08:00[America/New_York]',
+    })
+    assert(conflictingOffset.isError && conflictingOffset.content.includes('offset'), `conflicting offset should fail: ${JSON.stringify(conflictingOffset)}`)
+    const nonexistent = await invoke({ operation: 'inspect', dateTime: '2026-03-08T02:30:00', timeZone: 'America/New_York' })
+    assert(nonexistent.isError, `nonexistent DST time should fail: ${JSON.stringify(nonexistent)}`)
+    const mixedDuration = await invoke({
+        operation: 'add_duration',
+        dateTime: '2026-08-11T12:00:00Z',
+        days: 1,
+        hours: -1,
+    })
+    assert(mixedDuration.isError && mixedDuration.content.includes('正数和负数'), `mixed duration should fail: ${JSON.stringify(mixedDuration)}`)
+}
+
 async function verifyToolCancellationAndResultLimit() {
     const registry = new ToolRegistry([calculatorTool])
     const execute = registry.executorFor(['calculator'])
@@ -502,6 +582,7 @@ async function main() {
     await verifyQueuedCancellationAndFailureRelease()
     await verifyRunnerUsesModelQueue()
     await verifyToolRegistryAndCalculator()
+    await verifyDateTimeTool()
     await verifyToolCancellationAndResultLimit()
     await verifyOllamaAgentProtocol()
     await verifyOllamaAgentPreCancellation()
@@ -511,7 +592,7 @@ async function main() {
     await verifyModelInvocationRecords()
     console.log(JSON.stringify({
         ok: true,
-        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout', 'model-invocation-records'],
+        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'datetime-tool', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout', 'model-invocation-records'],
     }))
 }
 
