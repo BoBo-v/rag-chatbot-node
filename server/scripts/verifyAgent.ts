@@ -1,6 +1,9 @@
 import { AgentError } from '../agent/errors'
 import { AgentRunner } from '../agent/runner'
 import { AgentModelQueue } from '../agent/modelQueue'
+import { calculatorTool } from '../agent/calculatorTool'
+import { getAgentProfile } from '../agent/profiles'
+import { ToolRegistry } from '../agent/toolRegistry'
 import type {
     AgentLimits,
     AgentMessage,
@@ -220,6 +223,55 @@ async function verifyRunnerUsesModelQueue() {
     assert(events.some(event => event.type === 'agent_queued' && event.data.position === 1), `runner queue event missing: ${JSON.stringify(events)}`)
 }
 
+async function verifyToolRegistryAndCalculator() {
+    const profile = getAgentProfile('calculator-v0')
+    const registry = new ToolRegistry([calculatorTool])
+    const definitions = registry.definitionsFor(profile.toolNames)
+    const execute = registry.executorFor(profile.toolNames)
+    assert(definitions.length === 1 && definitions[0]?.name === 'calculator', `calculator definition missing: ${JSON.stringify(definitions)}`)
+
+    const multiplied = await execute(toolCall('multiply', 12, 35), new AbortController().signal)
+    assert(multiplied.content === '420' && !multiplied.isError, `calculator multiply failed: ${JSON.stringify(multiplied)}`)
+    const divisionByZero = await execute({
+        id: 'divide-zero',
+        name: 'calculator',
+        arguments: { operation: 'divide', left: 1, right: 0 },
+    }, new AbortController().signal)
+    assert(divisionByZero.isError && divisionByZero.content.includes('0'), `calculator divide-zero failed: ${JSON.stringify(divisionByZero)}`)
+
+    const invalid = await captureAgentError(() => execute({
+        id: 'invalid',
+        name: 'calculator',
+        arguments: { operation: 'multiply', left: '12', right: 35, extra: true },
+    }, new AbortController().signal))
+    assert(invalid.code === 'TOOL_ARGUMENTS_INVALID', `tool arguments should be rejected: ${invalid.code}`)
+
+    const forbidden = await captureAgentError(() => execute({
+        id: 'forbidden',
+        name: 'unknown_tool',
+        arguments: {},
+    }, new AbortController().signal))
+    assert(forbidden.code === 'TOOL_NOT_ALLOWED', `unknown tool should be rejected: ${forbidden.code}`)
+}
+
+async function verifyToolCancellationAndResultLimit() {
+    const registry = new ToolRegistry([calculatorTool])
+    const execute = registry.executorFor(['calculator'])
+    const controller = new AbortController()
+    controller.abort()
+    const cancelled = await captureAgentError(() => execute(toolCall('cancelled', 1, 2), controller.signal))
+    assert(cancelled.code === 'CLIENT_ABORTED', `tool cancel should be classified: ${cancelled.code}`)
+
+    const model = new FakeModel([
+        assistantTurn('', [toolCall('long-result', 1, 2)], 'tool_calls'),
+        assistantTurn('done'),
+    ])
+    await runner(model, async () => ({ content: 'x'.repeat(200), isError: false })).run(runInput())
+    const resultMessage = model.inputs[1]?.messages.find(message => message.role === 'tool')
+    assert(resultMessage?.role === 'tool' && resultMessage.content.length === limits.toolResultMaxChars, `tool result should be truncated: ${JSON.stringify(resultMessage)}`)
+    assert(resultMessage?.role === 'tool' && resultMessage.content.includes('已截断'), 'tool result truncation marker missing')
+}
+
 function runner(
     model: AgentModelClient,
     executeTool: ((call: AgentToolCall, signal: AbortSignal) => Promise<{ content: string; isError: boolean }>) | undefined = undefined,
@@ -293,9 +345,11 @@ async function main() {
     await verifyQueueFullAndTimeout()
     await verifyQueuedCancellationAndFailureRelease()
     await verifyRunnerUsesModelQueue()
+    await verifyToolRegistryAndCalculator()
+    await verifyToolCancellationAndResultLimit()
     console.log(JSON.stringify({
         ok: true,
-        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue'],
+        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'tool-cancel-result-limit'],
     }))
 }
 

@@ -60,6 +60,11 @@ export interface AgentToolDefinition {
     inputSchema: AgentToolInputSchema
 }
 
+export interface AgentTool {
+    definition: AgentToolDefinition
+    execute(argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<AgentToolExecutionResult>
+}
+
 export interface AgentTurnInput {
     model: string
     messages: AgentMessage[]
