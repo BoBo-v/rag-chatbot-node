@@ -50,14 +50,15 @@ export function insertObservabilityBatch(database: DatabaseSync, batch: Observab
     `)
     const aiStmt = database.prepare(`
         INSERT OR REPLACE INTO ai_request_logs (
-            id, request_id, compare_id, timestamp, endpoint, provider, model,
+            id, request_id, compare_id, agent_run_id, agent_step, finish_reason,
+            tool_call_count, timestamp, endpoint, provider, model,
             status, status_code, error_code, error_message,
             started_at, ended_at, latency_ms,
             rag_enabled, rag_mode, rag_top_k, rag_min_score, rag_hit_count,
             rag_best_score, rag_prompt_chars, embedding_model, prompt_version,
             input_chars, output_chars, est_input_tokens, est_output_tokens,
             est_cost_usd, question_preview, is_timeout
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const eventStmt = database.prepare(`
         INSERT OR REPLACE INTO application_events (
@@ -81,7 +82,9 @@ export function insertObservabilityBatch(database: DatabaseSync, batch: Observab
             if (entry.kind === 'ai') {
                 const value = entry.value
                 aiStmt.run(
-                    value.id, value.requestId, value.compareId, value.timestamp, value.endpoint,
+                    value.id, value.requestId, value.compareId, value.agentRunId ?? null,
+                    value.agentStep ?? null, value.finishReason ?? null, value.toolCallCount ?? null,
+                    value.timestamp, value.endpoint,
                     value.provider, value.model, value.status, value.statusCode, value.errorCode,
                     value.errorMessage, value.startedAt, value.endedAt, value.latencyMs,
                     value.ragEnabled ? 1 : 0, value.ragMode, value.ragTopK, value.ragMinScore,
@@ -134,6 +137,10 @@ function initSchema(database: DatabaseSync): void {
             id TEXT PRIMARY KEY,
             request_id TEXT,
             compare_id TEXT,
+            agent_run_id TEXT,
+            agent_step INTEGER,
+            finish_reason TEXT,
+            tool_call_count INTEGER,
             timestamp TEXT NOT NULL,
             endpoint TEXT NOT NULL,
             provider TEXT NOT NULL,
@@ -188,6 +195,24 @@ function initSchema(database: DatabaseSync): void {
         CREATE INDEX IF NOT EXISTS idx_event_request_id ON application_events(request_id);
         CREATE INDEX IF NOT EXISTS idx_event_level_type_time ON application_events(level, event_type, timestamp DESC);
     `)
+    ensureAiRequestLogColumns(database)
+    database.exec('CREATE INDEX IF NOT EXISTS idx_ai_agent_run_step ON ai_request_logs(agent_run_id, agent_step)')
+}
+
+function ensureAiRequestLogColumns(database: DatabaseSync): void {
+    const columns = new Set(
+        (database.prepare('PRAGMA table_info(ai_request_logs)').all() as Array<{ name: string }>)
+            .map(column => column.name)
+    )
+    const additions = [
+        ['agent_run_id', 'TEXT'],
+        ['agent_step', 'INTEGER'],
+        ['finish_reason', 'TEXT'],
+        ['tool_call_count', 'INTEGER'],
+    ] as const
+    for (const [name, type] of additions) {
+        if (!columns.has(name)) database.exec(`ALTER TABLE ai_request_logs ADD COLUMN ${name} ${type}`)
+    }
 }
 
 function migrateLegacyAiMetrics(database: DatabaseSync, vectorPath: string): void {

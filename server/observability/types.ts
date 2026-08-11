@@ -14,6 +14,10 @@ export interface AiRequestLogEntry {
     id: string
     requestId: string | null
     compareId: string | null
+    agentRunId?: string | null
+    agentStep?: number | null
+    finishReason?: string | null
+    toolCallCount?: number | null
     timestamp: string
     endpoint: string
     provider: string

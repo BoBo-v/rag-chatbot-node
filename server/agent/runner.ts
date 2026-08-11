@@ -4,6 +4,7 @@ import type {
     AgentLimits,
     AgentMessage,
     AgentModelClient,
+    AgentModelInvocationSink,
     AgentModelScheduler,
     AgentRequestMessage,
     AgentRunResult,
@@ -21,6 +22,7 @@ export interface AgentRunnerOptions {
     tools: AgentToolDefinition[]
     executeTool: AgentToolExecutor
     limits: AgentLimits
+    recordModelInvocation?: AgentModelInvocationSink
 }
 
 export interface RunAgentInput {
@@ -47,14 +49,58 @@ export class AgentRunner {
         for (let step = 1; step <= this.options.limits.maxModelTurns; step += 1) {
             throwIfAborted(input.signal)
             const aiInvocationId = randomUUID()
+            const modelStartedAt = new Date().toISOString()
+            const modelStarted = performance.now()
+            const inputChars = messageChars(messages)
             await input.emit?.({
                 type: 'model_started',
                 step,
-                data: { aiInvocationId, model: input.model },
+                data: { aiInvocationId, model: input.model, startedAt: modelStartedAt },
             })
 
-            const turn = await this.runModelTurn(input.model, messages, input.signal, step, input.emit)
-            validateTurnResult(turn.message.content, turn.message.toolCalls, turn.finishReason)
+            let turn
+            try {
+                turn = await this.runModelTurn(input.model, messages, input.signal, step, input.emit)
+                validateTurnResult(turn.message.content, turn.message.toolCalls, turn.finishReason)
+            } catch (error) {
+                const agentError = isAgentError(error)
+                    ? error
+                    : new AgentError('MODEL_PROVIDER_FAILED', '模型调用失败。', 502, { cause: error })
+                await this.recordModelInvocation({
+                    id: aiInvocationId,
+                    step,
+                    model: input.model,
+                    status: 'failed',
+                    startedAt: modelStartedAt,
+                    endedAt: new Date().toISOString(),
+                    latencyMs: Math.round(performance.now() - modelStarted),
+                    finishReason: null,
+                    toolCallCount: 0,
+                    inputChars,
+                    outputChars: null,
+                    errorCode: agentError.code,
+                    errorMessage: agentError.message,
+                    isTimeout: ['MODEL_TIMEOUT', 'AGENT_TIMEOUT'].includes(agentError.code),
+                })
+                throw agentError
+            }
+            await this.recordModelInvocation({
+                id: aiInvocationId,
+                step,
+                model: input.model,
+                status: 'success',
+                startedAt: modelStartedAt,
+                endedAt: new Date().toISOString(),
+                latencyMs: Math.round(performance.now() - modelStarted),
+                finishReason: turn.finishReason,
+                toolCallCount: turn.message.toolCalls.length,
+                inputChars,
+                outputChars: assistantMessageChars(turn.message),
+                usage: turn.usage,
+                errorCode: null,
+                errorMessage: null,
+                isTimeout: false,
+            })
             const usage = accumulateUsage(turn.usage)
             if (usage) {
                 hasUsage = true
@@ -203,6 +249,14 @@ export class AgentRunner {
             clearTimeout(timeout)
         }
     }
+
+    private async recordModelInvocation(record: Parameters<NonNullable<AgentRunnerOptions['recordModelInvocation']>>[0]): Promise<void> {
+        try {
+            await this.options.recordModelInvocation?.(record)
+        } catch {
+            // Observability failures must not break an Agent run.
+        }
+    }
 }
 
 function validateTurnResult(content: string, toolCalls: AgentToolCall[], finishReason: string): void {
@@ -293,4 +347,24 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
     const prototype = Object.getPrototypeOf(value)
     return prototype === Object.prototype || prototype === null
+}
+
+function messageChars(messages: AgentMessage[]): number {
+    return messages.reduce((sum, message) => {
+        if (message.role === 'assistant') {
+            return sum + message.content.length + message.toolCalls.reduce(
+                (toolSum, call) => toolSum + call.name.length + JSON.stringify(call.arguments).length,
+                0
+            )
+        }
+        if (message.role === 'tool') return sum + message.name.length + message.content.length
+        return sum + message.content.length
+    }, 0)
+}
+
+function assistantMessageChars(message: Extract<AgentMessage, { role: 'assistant' }>): number {
+    return message.content.length + message.toolCalls.reduce(
+        (sum, call) => sum + call.name.length + JSON.stringify(call.arguments).length,
+        0
+    )
 }

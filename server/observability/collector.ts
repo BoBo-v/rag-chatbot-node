@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { config } from '../utils/config'
+import { computeCost, parsePricingFromEnv } from '../utils/pricing'
+import { estimateTokens } from '../utils/tokenEstimator'
 import { safeContextJson, safeErrorMessage } from './privacy'
 import {
     cleanupObservability,
@@ -18,6 +20,7 @@ import type {
 const flushThreshold = 50
 const cleanupIntervalMs = 24 * 60 * 60 * 1000
 const retryBaseDelayMs = 250
+const pricingTable = parsePricingFromEnv(process.env.PRICING_TABLE || '')
 
 let queue: ObservabilityQueueEntry[] = []
 let flushTimer: ReturnType<typeof setInterval> | null = null
@@ -64,6 +67,75 @@ export function recordHttpRequest(entry: HttpRequestLogEntry): void {
 
 export function recordAiRequest(entry: AiRequestLogEntry): void {
     enqueue({ kind: 'ai', value: entry })
+}
+
+export function recordAgentModelInvocation(input: {
+    id: string
+    requestId: string
+    agentRunId: string
+    step: number
+    provider: string
+    model: string
+    status: 'success' | 'failed'
+    startedAt: string
+    endedAt: string
+    latencyMs: number
+    finishReason: string | null
+    toolCallCount: number
+    inputChars: number
+    outputChars: number | null
+    inputTokens?: number
+    outputTokens?: number
+    errorCode: string | null
+    errorMessage: unknown
+    isTimeout: boolean
+}): void {
+    const inputTokens = input.inputTokens ?? estimateTokens('x'.repeat(input.inputChars))
+    const outputTokens = input.outputTokens ?? (input.outputChars === null
+        ? null
+        : estimateTokens('x'.repeat(input.outputChars)))
+    const status = input.errorCode === 'CLIENT_ABORTED' ? 'client_aborted' : input.status
+    const statusCode = input.status === 'success'
+        ? 200
+        : input.errorCode === 'CLIENT_ABORTED'
+            ? null
+            : input.isTimeout ? 504 : 502
+    recordAiRequest({
+        id: input.id,
+        requestId: input.requestId,
+        compareId: null,
+        agentRunId: input.agentRunId,
+        agentStep: input.step,
+        finishReason: input.finishReason,
+        toolCallCount: input.toolCallCount,
+        timestamp: input.startedAt,
+        endpoint: '/api/agent',
+        provider: input.provider,
+        model: input.model,
+        status,
+        statusCode,
+        errorCode: input.errorCode,
+        errorMessage: input.errorMessage === null ? null : safeErrorMessage(input.errorMessage),
+        startedAt: input.startedAt,
+        endedAt: input.endedAt,
+        latencyMs: input.latencyMs,
+        ragEnabled: false,
+        ragMode: 'false',
+        ragTopK: 0,
+        ragMinScore: 0,
+        ragHitCount: 0,
+        ragBestScore: null,
+        ragPromptChars: 0,
+        embeddingModel: '',
+        promptVersion: 'agent-calculator-v0',
+        inputChars: input.inputChars,
+        outputChars: input.outputChars,
+        estInputTokens: inputTokens,
+        estOutputTokens: outputTokens,
+        estCostUsd: computeCost(input.provider, input.model, inputTokens, outputTokens ?? 0, pricingTable),
+        questionPreview: null,
+        isTimeout: input.isTimeout,
+    })
 }
 
 export function recordApplicationEvent(input: Omit<ApplicationEventEntry, 'id' | 'timestamp' | 'contextJson' | 'message'> & {

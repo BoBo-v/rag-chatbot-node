@@ -18,6 +18,7 @@ import type {
     AgentMessage,
     AgentModelClient,
     AgentModelScheduler,
+    AgentModelInvocationRecord,
     AgentRunnerEvent,
     AgentToolCall,
     AgentTurnInput,
@@ -398,6 +399,26 @@ async function verifyToolTimeout() {
     assert(error.code === 'TOOL_TIMEOUT', `tool timeout should be classified: ${error.code}`)
 }
 
+async function verifyModelInvocationRecords() {
+    const records: AgentModelInvocationRecord[] = []
+    const model = new FakeModel([
+        assistantTurn('', [toolCall('recorded-tool', 2, 3)], 'tool_calls'),
+        assistantTurn('6'),
+    ])
+    const instance = new AgentRunner({
+        modelClient: model,
+        tools: [],
+        executeTool: async () => ({ content: '6', isError: false }),
+        limits,
+        recordModelInvocation: record => { records.push(record) },
+    })
+    await instance.run(runInput())
+    assert(records.length === 2, `each model turn should be recorded: ${JSON.stringify(records)}`)
+    assert(records[0]?.step === 1 && records[0].finishReason === 'tool_calls' && records[0].toolCallCount === 1, `first invocation record failed: ${JSON.stringify(records[0])}`)
+    assert(records[1]?.step === 2 && records[1].finishReason === 'stop' && records[1].status === 'success', `second invocation record failed: ${JSON.stringify(records[1])}`)
+    assert(records.every(record => record.inputChars > 0 && record.latencyMs >= 0), `invocation sizes failed: ${JSON.stringify(records)}`)
+}
+
 function runner(
     model: AgentModelClient,
     executeTool: ((call: AgentToolCall, signal: AbortSignal) => Promise<{ content: string; isError: boolean }>) | undefined = undefined,
@@ -487,9 +508,10 @@ async function main() {
     await verifyOllamaAgentRequest()
     await verifyAgentEventContract()
     await verifyToolTimeout()
+    await verifyModelInvocationRecords()
     console.log(JSON.stringify({
         ok: true,
-        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout'],
+        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout', 'model-invocation-records'],
     }))
 }
 

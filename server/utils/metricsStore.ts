@@ -3,6 +3,10 @@ import type { DatabaseSync } from 'node:sqlite'
 export interface MetricRow {
     id: string
     request_id: string | null
+    agent_run_id: string | null
+    agent_step: number | null
+    finish_reason: string | null
+    tool_call_count: number | null
     compare_id: string | null
     timestamp: string
     endpoint: string

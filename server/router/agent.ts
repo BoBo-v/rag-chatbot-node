@@ -13,6 +13,7 @@ import { getAgentProvider } from '../llm'
 import { config } from '../utils/config'
 import { AppError } from '../utils/errors'
 import { estimateTokens } from '../utils/tokenEstimator'
+import { recordAgentModelInvocation, recordApplicationEvent } from '../observability/collector'
 
 const modelNamePattern = '^[A-Za-z0-9._:/@+-]+$'
 const toolRegistry = new ToolRegistry([calculatorTool])
@@ -164,6 +165,21 @@ async function streamAgentRun(input: {
             provider: input.body.provider,
             model: input.body.model,
         })
+        recordApplicationEvent({
+            requestId: input.requestId,
+            level: 'info',
+            eventType: 'agent.run.started',
+            module: 'agent',
+            operation: input.profile.id,
+            statusCode: 200,
+            errorCode: null,
+            message: 'Agent 运行开始',
+            context: {
+                agentRunId: input.agentRunId,
+                provider: input.body.provider,
+                model: input.body.model,
+            },
+        })
         heartbeat = setInterval(() => {
             void writer.emit('heartbeat', currentStep, { phase: 'running' }).catch(() => undefined)
         }, config.agentHeartbeatIntervalMs)
@@ -180,6 +196,14 @@ async function streamAgentRun(input: {
                 toolResultMaxChars: config.agentToolResultMaxChars,
                 runTimeoutMs: config.agentRunTimeoutMs,
             },
+            recordModelInvocation: invocation => recordAgentModelInvocation({
+                ...invocation,
+                requestId: input.requestId,
+                agentRunId: input.agentRunId,
+                provider: input.body.provider,
+                inputTokens: invocation.usage?.inputTokens,
+                outputTokens: invocation.usage?.outputTokens,
+            }),
         })
         const result = await runner.run({
             model: input.body.model,
@@ -188,6 +212,7 @@ async function streamAgentRun(input: {
             signal,
             emit: event => {
                 currentStep = event.step
+                recordToolEvent(input.requestId, input.agentRunId, event)
                 return writer.emit(event.type, event.step, event.data).then(() => undefined)
             },
         })
@@ -196,6 +221,22 @@ async function streamAgentRun(input: {
             modelTurns: result.modelTurns,
             toolCallCount: result.toolCallCount,
             usage: result.usage ?? null,
+        })
+        recordApplicationEvent({
+            requestId: input.requestId,
+            level: 'info',
+            eventType: 'agent.run.completed',
+            module: 'agent',
+            operation: input.profile.id,
+            statusCode: 200,
+            errorCode: null,
+            message: 'Agent 运行完成',
+            context: {
+                agentRunId: input.agentRunId,
+                modelTurns: result.modelTurns,
+                toolCallCount: result.toolCallCount,
+                finishReason: result.finishReason,
+            },
         })
     } catch (error) {
         const agentError = toAgentError(error)
@@ -208,11 +249,55 @@ async function streamAgentRun(input: {
         } catch {
             // The client may already have closed the stream.
         }
+        recordApplicationEvent({
+            requestId: input.requestId,
+            level: agentError.code === 'CLIENT_ABORTED' ? 'warn' : 'error',
+            eventType: agentError.code === 'CLIENT_ABORTED' ? 'agent.run.cancelled' : 'agent.run.failed',
+            module: 'agent',
+            operation: input.profile.id,
+            statusCode: agentError.statusCode,
+            errorCode: agentError.code,
+            message: agentError.message,
+            context: {
+                agentRunId: input.agentRunId,
+                step: currentStep,
+                provider: input.body.provider,
+                model: input.body.model,
+            },
+        })
     } finally {
         clearTimeout(runTimeout)
         if (heartbeat) clearInterval(heartbeat)
         if (!input.output.destroyed && !input.output.writableEnded) input.output.end()
     }
+}
+
+function recordToolEvent(
+    requestId: string,
+    agentRunId: string,
+    event: { type: string; step: number; data: Record<string, unknown> }
+): void {
+    if (event.type !== 'tool_started' && event.type !== 'tool_completed') return
+    recordApplicationEvent({
+        requestId,
+        level: event.type === 'tool_completed' && event.data.isError ? 'warn' : 'info',
+        eventType: event.type === 'tool_started' ? 'agent.tool.started' : 'agent.tool.completed',
+        module: 'agent',
+        operation: typeof event.data.name === 'string' ? event.data.name : 'tool',
+        statusCode: null,
+        errorCode: null,
+        message: event.type === 'tool_started' ? 'Agent 工具开始执行' : 'Agent 工具执行完成',
+        context: {
+            agentRunId,
+            toolInvocationId: event.data.toolInvocationId,
+            toolCallId: event.data.toolCallId,
+            step: event.step,
+            name: event.data.name,
+            isError: event.data.isError,
+            durationMs: event.data.durationMs,
+            resultChars: event.data.resultChars,
+        },
+    })
 }
 
 function abortController(controller: AbortController, reason: AgentError): void {

@@ -30,6 +30,7 @@ async function main() {
             flushObservabilityForTest,
             getObservabilityRuntimeStatus,
             recordAiRequest,
+            recordAgentModelInvocation,
             recordApplicationEvent,
             recordHttpRequest,
             startObservability,
@@ -48,6 +49,9 @@ async function main() {
         assert(migrated.question_preview === null, `legacy question preview should not migrate: ${JSON.stringify(migrated)}`)
         const columns = db.prepare('PRAGMA table_info(ai_request_logs)').all() as Array<{ name: string }>
         assert(!columns.some(column => column.name === 'raw_error'), 'new AI table must not contain raw_error')
+        for (const column of ['agent_run_id', 'agent_step', 'finish_reason', 'tool_call_count']) {
+            assert(columns.some(current => current.name === column), `Agent AI column missing: ${column}`)
+        }
 
         const requestId = randomUUID()
         const secondRequestId = randomUUID()
@@ -112,9 +116,44 @@ async function main() {
             statusCode: 500,
             errorCode: 'TEST_FAILED',
             message: 'token=secret-value should be hidden',
-            context: { safeField: 'ok', authorization: 'Bearer secret-value' },
+            context: {
+                safeField: 'ok',
+                agentRunId: 'agent-run-safe',
+                step: 1,
+                toolInvocationId: 'tool-run-safe',
+                authorization: 'Bearer secret-value',
+                arguments: { secret: 'must-not-persist' },
+            },
+        })
+        const agentRequestId = randomUUID()
+        recordAgentModelInvocation({
+            id: randomUUID(),
+            requestId: agentRequestId,
+            agentRunId: 'agent-run-safe',
+            step: 1,
+            provider: 'ollama',
+            model: 'qwen2.5:7b',
+            status: 'success',
+            startedAt: now.toISOString(),
+            endedAt: now.toISOString(),
+            latencyMs: 250,
+            finishReason: 'tool_calls',
+            toolCallCount: 1,
+            inputChars: 100,
+            outputChars: 50,
+            inputTokens: 25,
+            outputTokens: 12,
+            errorCode: null,
+            errorMessage: null,
+            isTimeout: false,
         })
         flushObservabilityForTest()
+
+        const agentInvocation = db.prepare('SELECT * FROM ai_request_logs WHERE request_id = ?')
+            .get(agentRequestId) as Record<string, unknown>
+        assert(agentInvocation.agent_run_id === 'agent-run-safe', `Agent run ID should persist: ${JSON.stringify(agentInvocation)}`)
+        assert(agentInvocation.agent_step === 1 && agentInvocation.finish_reason === 'tool_calls', `Agent step fields should persist: ${JSON.stringify(agentInvocation)}`)
+        assert(agentInvocation.tool_call_count === 1 && agentInvocation.rag_enabled === 0, `Agent defaults should persist: ${JSON.stringify(agentInvocation)}`)
 
         const from = new Date(now.getTime() - 60000).toISOString()
         const to = new Date(now.getTime() + 60000).toISOString()
@@ -130,6 +169,8 @@ async function main() {
         const event = detail?.events[0] as { message?: string; context_json?: string }
         assert(!event.message?.includes('secret-value'), `event message should be redacted: ${JSON.stringify(event)}`)
         assert(!event.context_json?.includes('secret-value'), `event context should be redacted: ${JSON.stringify(event)}`)
+        assert(event.context_json?.includes('agent-run-safe') && event.context_json.includes('tool-run-safe'), `Agent context should be retained: ${JSON.stringify(event)}`)
+        assert(!event.context_json?.includes('must-not-persist') && !event.context_json?.includes('arguments'), `tool arguments must not persist: ${JSON.stringify(event)}`)
 
         const errors = queryErrors(db, { from, to, limit: 20 })
         assert(errors.rows.some(row => row.request_id === requestId), `errors should include request: ${JSON.stringify(errors)}`)
@@ -177,7 +218,7 @@ async function main() {
         stopObservability()
         console.log(JSON.stringify({
             ok: true,
-            checks: ['legacy-migration', 'sensitive-field-drop', 'cursor-pagination', 'request-linking', 'event-redaction', 'error-redaction', 'error-code-filter', 'delayed-retry', 'drop-oldest-policy'],
+            checks: ['legacy-migration', 'agent-columns', 'agent-model-log', 'sensitive-field-drop', 'cursor-pagination', 'request-linking', 'agent-context-whitelist', 'event-redaction', 'error-redaction', 'error-code-filter', 'delayed-retry', 'drop-oldest-policy'],
         }))
     } finally {
         await rm(tempDir, { recursive: true, force: true })

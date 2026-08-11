@@ -15,6 +15,19 @@ const allowedContextKeys = new Set([
     'attempt',
     'batchSize',
     'safeField',
+    'agentRunId',
+    'toolInvocationId',
+    'toolCallId',
+    'step',
+    'provider',
+    'model',
+    'modelTurns',
+    'toolCallCount',
+    'finishReason',
+    'name',
+    'isError',
+    'durationMs',
+    'resultChars',
 ])
 
 export function routeTemplateFromRequest(request: FastifyRequest): string {

@@ -116,6 +116,28 @@ export interface AgentRunResult {
     usage?: AgentUsage
 }
 
+export interface AgentModelInvocationRecord {
+    id: string
+    step: number
+    model: string
+    status: 'success' | 'failed'
+    startedAt: string
+    endedAt: string
+    latencyMs: number
+    finishReason: AgentFinishReason | null
+    toolCallCount: number
+    inputChars: number
+    outputChars: number | null
+    usage?: AgentUsage
+    errorCode: string | null
+    errorMessage: string | null
+    isTimeout: boolean
+}
+
+export type AgentModelInvocationSink = (
+    record: AgentModelInvocationRecord
+) => void | Promise<void>
+
 export interface AgentRunRequest {
     agentProfile: AgentProfileId
     provider: ChatProviderId
