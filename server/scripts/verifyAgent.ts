@@ -1,9 +1,11 @@
 import { AgentError } from '../agent/errors'
 import { AgentRunner } from '../agent/runner'
+import { AgentModelQueue } from '../agent/modelQueue'
 import type {
     AgentLimits,
     AgentMessage,
     AgentModelClient,
+    AgentModelScheduler,
     AgentRunnerEvent,
     AgentToolCall,
     AgentTurnInput,
@@ -136,12 +138,96 @@ async function verifyCancellation() {
     assert(error.code === 'CLIENT_ABORTED', `cancel should be classified: ${error.code}`)
 }
 
+async function verifyModelQueueConcurrencyAndOrder() {
+    const queue = new AgentModelQueue({ concurrency: 1, maxQueueSize: 3, queueTimeoutMs: 1000 })
+    const first = deferred<void>()
+    const order: string[] = []
+    let active = 0
+    let maxActive = 0
+    const task = (name: string, gate?: Promise<void>) => queue.run(async () => {
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        order.push(name)
+        if (gate) await gate
+        active -= 1
+        return name
+    }, new AbortController().signal)
+
+    const one = task('one', first.promise)
+    const two = task('two')
+    const three = task('three')
+    assert(queue.stats().active === 1 && queue.stats().queued === 2, `queue stats failed: ${JSON.stringify(queue.stats())}`)
+    first.resolve()
+    assert((await Promise.all([one, two, three])).join(',') === 'one,two,three', 'queue result order failed')
+    assert(order.join(',') === 'one,two,three' && maxActive === 1, `queue concurrency failed: ${JSON.stringify({ order, maxActive })}`)
+}
+
+async function verifyQueueFullAndTimeout() {
+    const fullQueue = new AgentModelQueue({ concurrency: 1, maxQueueSize: 1, queueTimeoutMs: 1000 })
+    const gate = deferred<void>()
+    const active = fullQueue.run(async () => gate.promise, new AbortController().signal)
+    const waiting = fullQueue.run(async () => undefined, new AbortController().signal)
+    const fullError = await captureAgentError(async () => fullQueue.run(async () => undefined, new AbortController().signal))
+    assert(fullError.code === 'AGENT_QUEUE_FULL', `queue full failed: ${fullError.code}`)
+    gate.resolve()
+    await Promise.all([active, waiting])
+
+    const timeoutQueue = new AgentModelQueue({ concurrency: 1, maxQueueSize: 1, queueTimeoutMs: 20 })
+    const timeoutGate = deferred<void>()
+    const timeoutActive = timeoutQueue.run(async () => timeoutGate.promise, new AbortController().signal)
+    const timeoutError = await captureAgentError(() => timeoutQueue.run(async () => undefined, new AbortController().signal))
+    assert(timeoutError.code === 'AGENT_QUEUE_TIMEOUT', `queue timeout failed: ${timeoutError.code}`)
+    timeoutGate.resolve()
+    await timeoutActive
+}
+
+async function verifyQueuedCancellationAndFailureRelease() {
+    const queue = new AgentModelQueue({ concurrency: 1, maxQueueSize: 2, queueTimeoutMs: 1000 })
+    const gate = deferred<void>()
+    const active = queue.run(async () => gate.promise, new AbortController().signal)
+    const controller = new AbortController()
+    const cancelled = queue.run(async () => undefined, controller.signal)
+    controller.abort()
+    const cancelError = await captureAgentError(() => cancelled)
+    assert(cancelError.code === 'CLIENT_ABORTED', `queued cancel failed: ${cancelError.code}`)
+    assert(queue.stats().queued === 0, `cancelled entry should be removed: ${JSON.stringify(queue.stats())}`)
+    gate.resolve()
+    await active
+
+    const failureQueue = new AgentModelQueue({ concurrency: 1, maxQueueSize: 1, queueTimeoutMs: 1000 })
+    const failed = failureQueue.run(async () => { throw new Error('expected') }, new AbortController().signal)
+    const afterFailure = failureQueue.run(async () => 'released', new AbortController().signal)
+    await failed.catch(() => undefined)
+    assert(await afterFailure === 'released', 'queue slot should be released after task failure')
+}
+
+async function verifyRunnerUsesModelQueue() {
+    const queue = new AgentModelQueue({ concurrency: 1, maxQueueSize: 1, queueTimeoutMs: 1000 })
+    const gate = deferred<void>()
+    const blocker = queue.run(async () => gate.promise, new AbortController().signal)
+    const events: AgentRunnerEvent[] = []
+    const running = runner(new FakeModel([assistantTurn('queued answer')]), undefined, queue).run({
+        ...runInput(),
+        emit: event => { events.push(event) },
+    })
+    await Promise.resolve()
+    const queuedStats = queue.stats()
+    gate.resolve()
+    await blocker
+    const result = await running
+    assert(queuedStats.queued === 1, `runner should wait in model queue: ${JSON.stringify(queuedStats)}`)
+    assert(result.message.content === 'queued answer', 'queued runner should complete')
+    assert(events.some(event => event.type === 'agent_queued' && event.data.position === 1), `runner queue event missing: ${JSON.stringify(events)}`)
+}
+
 function runner(
     model: AgentModelClient,
-    executeTool: (call: AgentToolCall, signal: AbortSignal) => Promise<{ content: string; isError: boolean }> = async call => ({ content: call.id, isError: false })
+    executeTool: ((call: AgentToolCall, signal: AbortSignal) => Promise<{ content: string; isError: boolean }>) | undefined = undefined,
+    modelScheduler?: AgentModelScheduler
 ) {
     return new AgentRunner({
         modelClient: model,
+        modelScheduler,
         tools: [{
             name: 'calculator',
             description: '测试计算器',
@@ -151,7 +237,7 @@ function runner(
                 additionalProperties: false,
             },
         }],
-        executeTool,
+        executeTool: executeTool ?? (async call => ({ content: call.id, isError: false })),
         limits,
     })
 }
@@ -203,9 +289,13 @@ async function main() {
     await verifyLastTurnDoesNotExecuteTool()
     await verifyProtocolValidation()
     await verifyCancellation()
+    await verifyModelQueueConcurrencyAndOrder()
+    await verifyQueueFullAndTimeout()
+    await verifyQueuedCancellationAndFailureRelease()
+    await verifyRunnerUsesModelQueue()
     console.log(JSON.stringify({
         ok: true,
-        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation'],
+        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue'],
     }))
 }
 
@@ -213,3 +303,13 @@ main().catch(error => {
     console.error(error)
     process.exitCode = 1
 })
+
+function deferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void
+    let reject!: (reason?: unknown) => void
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise
+        reject = rejectPromise
+    })
+    return { promise, resolve, reject }
+}

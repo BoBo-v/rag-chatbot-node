@@ -76,6 +76,14 @@ export interface AgentModelClient {
     runTurn(input: AgentTurnInput, signal: AbortSignal): Promise<AgentTurnResult>
 }
 
+export interface AgentModelScheduler {
+    run<T>(
+        task: () => Promise<T>,
+        signal: AbortSignal,
+        onQueued?: (position: number) => void
+    ): Promise<T>
+}
+
 export interface AgentToolExecutionResult {
     content: string
     isError: boolean
@@ -87,7 +95,7 @@ export type AgentToolExecutor = (
 ) => Promise<AgentToolExecutionResult>
 
 export interface AgentRunnerEvent {
-    type: Exclude<AgentEventType, 'agent_started' | 'agent_queued' | 'heartbeat' | 'agent_completed' | 'agent_failed' | 'agent_cancelled'>
+    type: Exclude<AgentEventType, 'agent_started' | 'heartbeat' | 'agent_completed' | 'agent_failed' | 'agent_cancelled'>
     step: number
     data: Record<string, unknown>
 }

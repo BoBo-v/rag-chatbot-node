@@ -4,6 +4,7 @@ import type {
     AgentLimits,
     AgentMessage,
     AgentModelClient,
+    AgentModelScheduler,
     AgentRequestMessage,
     AgentRunResult,
     AgentRunnerEventSink,
@@ -16,6 +17,7 @@ import type {
 
 export interface AgentRunnerOptions {
     modelClient: AgentModelClient
+    modelScheduler?: AgentModelScheduler
     tools: AgentToolDefinition[]
     executeTool: AgentToolExecutor
     limits: AgentLimits
@@ -51,7 +53,7 @@ export class AgentRunner {
                 data: { aiInvocationId, model: input.model },
             })
 
-            const turn = await this.runModelTurn(input.model, messages, input.signal)
+            const turn = await this.runModelTurn(input.model, messages, input.signal, step, input.emit)
             validateTurnResult(turn.message.content, turn.message.toolCalls, turn.finishReason)
             const usage = accumulateUsage(turn.usage)
             if (usage) {
@@ -149,13 +151,31 @@ export class AgentRunner {
         throw new AgentError('AGENT_LIMIT_EXCEEDED', 'Agent 已达到运行限制。', 409)
     }
 
-    private async runModelTurn(model: string, messages: AgentMessage[], signal: AbortSignal) {
+    private async runModelTurn(
+        model: string,
+        messages: AgentMessage[],
+        signal: AbortSignal,
+        step: number,
+        emit?: AgentRunnerEventSink
+    ) {
         try {
-            return await this.options.modelClient.runTurn({
-                model,
-                messages: messages.map(cloneMessage),
-                tools: this.options.tools,
-            }, signal)
+            const invoke = () => this.options.modelClient.runTurn({
+                    model,
+                    messages: messages.map(cloneMessage),
+                    tools: this.options.tools,
+                }, signal)
+            if (!this.options.modelScheduler) return await invoke()
+
+            let queuedEvent: Promise<void> | undefined
+            const result = this.options.modelScheduler.run(invoke, signal, position => {
+                queuedEvent = Promise.resolve(emit?.({
+                    type: 'agent_queued',
+                    step,
+                    data: { position, model },
+                }))
+            })
+            await queuedEvent
+            return await result
         } catch (error) {
             throwIfAborted(signal)
             if (isAgentError(error)) throw error
