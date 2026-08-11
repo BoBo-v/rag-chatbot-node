@@ -98,7 +98,7 @@ export const config = {
     maxExtractedTextChars: Math.min(5_000_000, Math.max(1, Math.floor(numberFromEnv('MAX_EXTRACTED_TEXT_CHARS', 2_000_000)))),
     maxFileChunks: Math.min(5000, Math.max(1, Math.floor(numberFromEnv('MAX_FILE_CHUNKS', 2000)))),
     embeddingBatchSize: Math.max(1, Math.floor(numberFromEnv('EMBEDDING_BATCH_SIZE', 16))),
-    ollamaTimeoutMs: Math.max(1000, numberFromEnv('OLLAMA_TIMEOUT_MS', 900000)),
+    ollamaTimeoutMs: Math.max(1000, numberFromEnv('OLLAMA_TIMEOUT_MS', 600000)),
     visionModel: process.env.VISION_MODEL || 'qwen3-vl:2b',
     uploadDir: process.env.UPLOAD_DIR || 'server/data/uploads',
     vectorStorePath: process.env.VECTOR_STORE_PATH || 'server/data/vector-store.sqlite',
