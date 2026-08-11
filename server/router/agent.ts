@@ -7,6 +7,7 @@ import { AgentModelQueue } from '../agent/modelQueue'
 import { getAgentProfile } from '../agent/profiles'
 import { AgentRunner } from '../agent/runner'
 import { calculatorTool } from '../agent/calculatorTool'
+import { dateTimeTool } from '../agent/dateTimeTool'
 import { ToolRegistry } from '../agent/toolRegistry'
 import { agentProfileIds, type AgentRunRequest } from '../agent/types'
 import { getAgentProvider } from '../llm'
@@ -16,7 +17,7 @@ import { estimateTokens } from '../utils/tokenEstimator'
 import { recordAgentModelInvocation, recordApplicationEvent } from '../observability/collector'
 
 const modelNamePattern = '^[A-Za-z0-9._:/@+-]+$'
-const toolRegistry = new ToolRegistry([calculatorTool])
+const toolRegistry = new ToolRegistry([calculatorTool, dateTimeTool])
 const modelQueue = new AgentModelQueue({
     concurrency: config.agentModelConcurrency,
     maxQueueSize: config.agentQueueMaxSize,

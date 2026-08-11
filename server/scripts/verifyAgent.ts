@@ -5,7 +5,7 @@ import { AgentRunner } from '../agent/runner'
 import { AgentModelQueue } from '../agent/modelQueue'
 import { calculatorTool } from '../agent/calculatorTool'
 import { Temporal } from '@js-temporal/polyfill'
-import { createDateTimeTool } from '../agent/dateTimeTool'
+import { createDateTimeTool, dateTimeTool } from '../agent/dateTimeTool'
 import { getAgentProfile } from '../agent/profiles'
 import { ToolRegistry } from '../agent/toolRegistry'
 import {
@@ -344,6 +344,17 @@ async function verifyDateTimeTool() {
     assert(mixedDuration.isError && mixedDuration.content.includes('正数和负数'), `mixed duration should fail: ${JSON.stringify(mixedDuration)}`)
 }
 
+async function verifyAgentProfiles() {
+    const calculatorProfile = getAgentProfile('calculator-v0')
+    assert(calculatorProfile.toolNames.join(',') === 'calculator', `calculator profile changed unexpectedly: ${JSON.stringify(calculatorProfile)}`)
+
+    const toolsProfile = getAgentProfile('tools-v0')
+    const registry = new ToolRegistry([calculatorTool, dateTimeTool])
+    const definitions = registry.definitionsFor(toolsProfile.toolNames)
+    assert(definitions.map(definition => definition.name).join(',') === 'calculator,datetime', `tools profile definitions failed: ${JSON.stringify(definitions)}`)
+    assert(toolsProfile.systemPrompt.includes('不得猜测用户所在地'), 'tools profile should forbid guessing user timezone')
+}
+
 async function verifyToolCancellationAndResultLimit() {
     const registry = new ToolRegistry([calculatorTool])
     const execute = registry.executorFor(['calculator'])
@@ -583,6 +594,7 @@ async function main() {
     await verifyRunnerUsesModelQueue()
     await verifyToolRegistryAndCalculator()
     await verifyDateTimeTool()
+    await verifyAgentProfiles()
     await verifyToolCancellationAndResultLimit()
     await verifyOllamaAgentProtocol()
     await verifyOllamaAgentPreCancellation()
@@ -592,7 +604,7 @@ async function main() {
     await verifyModelInvocationRecords()
     console.log(JSON.stringify({
         ok: true,
-        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'datetime-tool', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout', 'model-invocation-records'],
+        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'datetime-tool', 'agent-profiles', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout', 'model-invocation-records'],
     }))
 }
 

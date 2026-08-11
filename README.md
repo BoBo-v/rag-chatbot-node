@@ -606,7 +606,7 @@ GET /api/tags
 
 ## Agent V0
 
-Agent V0 是独立于 `/api/chat` 的受控运行环境，当前只支持后端 Ollama、`calculator-v0` 和无副作用计算器。Agent 关闭时路由不会注册。
+Agent V0 是独立于 `/api/chat` 的受控运行环境，当前支持后端 Ollama、兼容旧请求的 `calculator-v0`，以及包含计算器和日期时间工具的 `tools-v0`。Agent 关闭时路由不会注册。
 
 ```env
 AGENT_ENABLED=true
@@ -623,7 +623,7 @@ Content-Type: application/json
 x-agent-api-key: replace-with-a-random-secret
 
 {
-  "agentProfile": "calculator-v0",
+  "agentProfile": "tools-v0",
   "provider": "ollama",
   "model": "qwen2.5:7b",
   "messages": [
@@ -631,6 +631,13 @@ x-agent-api-key: replace-with-a-random-secret
   ]
 }
 ```
+
+`tools-v0` 只允许后端注册的两个无副作用工具：
+
+- `calculator`：两个有限数字的加、减、乘、除
+- `datetime`：当前时间、IANA 时区转换、日期加减、时间差、日期属性分析和 Unix 时间戳转换
+
+`datetime` 使用 ISO 8601 时间和 IANA 时区（例如 `Asia/Shanghai`）。不带 `Z` 或 UTC offset 的本地时间必须提供时区；`CST` 等有歧义的缩写会被拒绝。日期加减区分“日历日”和“固定小时”，并按真实夏令时规则计算。
 
 响应类型为 `application/x-ndjson`。每个事件都包含 `version`、`sequence`、`requestId`、`agentRunId`、`step` 和 `timestamp`。一次运行只允许一个终态：`agent_completed`、`agent_failed` 或 `agent_cancelled`。
 

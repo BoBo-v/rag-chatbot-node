@@ -97,6 +97,13 @@ async function main() {
         assert(completedEvents.some(event => event.type === 'assistant_message' && event.data.content === '结果是 420。'), `Agent final answer missing: ${JSON.stringify(completedEvents)}`)
         assert(fake.requestBodies.every(body => body.think === false && body.stream === false), 'Ollama Agent must suppress raw thinking and streaming')
 
+        const dateTimeResponse = await fetch(`${baseUrl}/api/agent`, agentRequestInit(agentKey, 'time'))
+        const dateTimeEvents = await readAgentEvents(dateTimeResponse)
+        assertEventContract(dateTimeEvents, 'agent_completed')
+        assert(dateTimeEvents.some(event => event.type === 'tool_started' && event.data.name === 'datetime'), `datetime tool was not started: ${JSON.stringify(dateTimeEvents)}`)
+        assert(dateTimeEvents.some(event => event.type === 'tool_completed' && event.data.name === 'datetime' && event.data.isError === false), `datetime tool failed: ${JSON.stringify(dateTimeEvents)}`)
+        assert(dateTimeEvents.some(event => event.type === 'assistant_message' && event.data.content === '时间工具已完成。'), `datetime answer missing: ${JSON.stringify(dateTimeEvents)}`)
+
         const timeoutResponse = await fetch(`${baseUrl}/api/agent`, agentRequestInit(agentKey, 'timeout'))
         const timeoutEvents = await readAgentEvents(timeoutResponse)
         assertEventContract(timeoutEvents, 'agent_failed')
@@ -142,7 +149,7 @@ async function main() {
             checks: [
                 'dedicated-auth', 'business-auth-isolation', 'request-role-validation',
                 'model-allowlist', 'provider-capabilities', 'ndjson-contract',
-                'calculator-round-trip', 'model-timeout', 'client-cancellation',
+                'calculator-round-trip', 'datetime-round-trip', 'model-timeout', 'client-cancellation',
                 'agent-model-logs', 'agent-cancel-event',
             ],
         }))
@@ -173,9 +180,10 @@ function createFakeOllamaServer() {
             return
         }
         const hasToolResult = messages.some(message => message.role === 'tool')
+        const isDateTimeRequest = userText === 'time'
         sendJson(response, hasToolResult
             ? {
-                message: { role: 'assistant', content: '结果是 420。' },
+                message: { role: 'assistant', content: isDateTimeRequest ? '时间工具已完成。' : '结果是 420。' },
                 done: true,
                 done_reason: 'stop',
                 prompt_eval_count: 120,
@@ -186,10 +194,12 @@ function createFakeOllamaServer() {
                     role: 'assistant',
                     content: '',
                     tool_calls: [{
-                        id: 'calculator-call-1',
+                        id: isDateTimeRequest ? 'datetime-call-1' : 'calculator-call-1',
                         function: {
-                            name: 'calculator',
-                            arguments: { operation: 'multiply', left: 12, right: 35 },
+                            name: isDateTimeRequest ? 'datetime' : 'calculator',
+                            arguments: isDateTimeRequest
+                                ? { operation: 'inspect', dateTime: '2024-02-29T12:00:00Z' }
+                                : { operation: 'multiply', left: 12, right: 35 },
                         },
                     }],
                 },
@@ -219,7 +229,7 @@ function agentRequestInit(agentKey: string | undefined, content: string): Reques
 
 function agentBody(content: string, model = 'qwen2.5:7b') {
     return {
-        agentProfile: 'calculator-v0',
+        agentProfile: 'tools-v0',
         provider: 'ollama',
         model,
         messages: [{ role: 'user', content }],
