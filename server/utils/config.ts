@@ -124,7 +124,7 @@ export const config = {
     agentEnabled: booleanFromEnv('AGENT_ENABLED', false),
     agentAccessMode: agentAccessModeFromEnv(),
     agentApiKey: process.env.AGENT_API_KEY || '',
-    agentOllamaModels: listFromEnv('AGENT_OLLAMA_MODELS', ['qwen3:8b']),
+    agentOllamaModels: listFromEnv('AGENT_OLLAMA_MODELS', ['qwen2.5:7b']),
     agentMaxModelTurns: 3,
     agentMaxToolCalls: 3,
     agentMaxParallelToolCalls: 1,
