@@ -26,6 +26,7 @@ async function main() {
     process.env.EMBEDDING_BATCH_SIZE = '1'
     process.env.OPENAI_API_KEY = ''
     process.env.ANTHROPIC_API_KEY = ''
+    process.env.AGENT_ENABLED = 'false'
 
     try {
         await writeFile(path.join(tempDir, 'vector-store.json'), JSON.stringify({
@@ -101,6 +102,13 @@ async function main() {
         })
         assert(notFound.status === 404, `expected 404 for missing route, got ${notFound.status}`)
         assert(notFound.body.code === 'NOT_FOUND', `not found should include code: ${JSON.stringify(notFound.body)}`)
+
+        const disabledAgent = await fetchJsonError(`http://127.0.0.1:${port}/api/agent`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        })
+        assert(disabledAgent.status === 404, `disabled Agent should be hidden: ${JSON.stringify(disabledAgent)}`)
 
         const badSearch = await fetchJsonError(`http://127.0.0.1:${port}/api/search`, {
             headers: authHeaders(apiKey),
@@ -304,7 +312,7 @@ async function main() {
 
         console.log(JSON.stringify({
             ok: true,
-            checks: ['auth', 'cors-error', 'legacy-id-normalization', 'not-found', 'search-validation', 'provider-error', 'request-id', 'log-auth', 'log-summary', 'log-route-template', 'log-cursor-validation', 'log-request-detail', 'log-error-redaction', 'dashboard', 'swagger', 'providers', 'upload', 'search', 'vector-store-status', 'chat-context', 'vector-store-reindex', 'vector-store-reset'],
+            checks: ['auth', 'cors-error', 'legacy-id-normalization', 'not-found', 'agent-disabled', 'search-validation', 'provider-error', 'request-id', 'log-auth', 'log-summary', 'log-route-template', 'log-cursor-validation', 'log-request-detail', 'log-error-redaction', 'dashboard', 'swagger', 'providers', 'upload', 'search', 'vector-store-status', 'chat-context', 'vector-store-reindex', 'vector-store-reset'],
         }))
     } finally {
         if (app) await app.close()

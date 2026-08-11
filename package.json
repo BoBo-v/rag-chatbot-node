@@ -8,6 +8,7 @@
     "verify": "tsx server/scripts/verifyRunner.ts",
     "verify:http": "tsx server/scripts/verifyHttp.ts",
     "verify:agent": "tsx server/scripts/verifyAgent.ts",
+    "verify:agent:http": "tsx server/scripts/verifyAgentHttp.ts",
     "verify:observability": "tsx server/scripts/verifyObservability.ts",
     "typecheck": "tsc --noEmit"
   },

@@ -135,6 +135,8 @@ npm run typecheck
 npm run verify
 npm run verify:http
 npm run verify:observability
+npm run verify:agent
+npm run verify:agent:http
 ```
 
 - `dev:server`：启动后端开发服务，使用 `tsx watch`
@@ -142,6 +144,8 @@ npm run verify:observability
 - `verify`：本地逻辑验证，包括 chunker、向量库、去重、混合检索、中文 FTS 等
 - `verify:http`：HTTP 接口级验证
 - `verify:observability`：独立观测库、旧指标迁移、游标分页和脱敏验证
+- `verify:agent`：AgentRunner、模型队列、工具校验、超时和 Ollama 协议验证
+- `verify:agent:http`：Agent 专用鉴权、NDJSON、取消、模型超时和日志关联验证
 
 如果 `npm run verify` 报 SQLite 文件 `EBUSY`，通常是后端进程正在占用 `server/data/vector-store.sqlite`。先停止后端再跑验证。
 
@@ -180,7 +184,7 @@ CORS_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
 
 EMBEDDING_MODEL=bge-m3
 VISION_MODEL=qwen3-vl:2b
-OLLAMA_TIMEOUT_MS=900000
+OLLAMA_TIMEOUT_MS=600000
 UPLOAD_DIR=server/data/uploads
 VECTOR_STORE_PATH=server/data/vector-store.sqlite
 OBSERVABILITY_DB_PATH=server/data/observability.sqlite
@@ -218,12 +222,22 @@ LOG_WRITE_RETRY_COUNT=3
 LOG_HTTP_RETENTION_DAYS=30
 LOG_AI_RETENTION_DAYS=90
 LOG_EVENT_RETENTION_DAYS=90
+
+AGENT_ENABLED=false
+AGENT_ACCESS_MODE=api-key
+AGENT_API_KEY=
+AGENT_OLLAMA_MODELS=qwen2.5:7b
+AGENT_QUEUE_MAX_SIZE=5
+AGENT_QUEUE_TIMEOUT_MS=30000
+AGENT_OLLAMA_MODEL_TIMEOUT_MS=600000
+AGENT_RUN_TIMEOUT_MS=1200000
+AGENT_TOOL_TIMEOUT_MS=5000
 ```
 
 说明：
 
 - `OLLAMA_URL` 建议用 `http://127.0.0.1:11434`，避免 Windows 下 `localhost` 的 IPv4/IPv6 差异
-- `OLLAMA_TIMEOUT_MS=900000` 是 900 秒，主要为了本地视觉模型慢的问题
+- `OLLAMA_TIMEOUT_MS=600000` 是 600 秒，本地 Ollama 普通调用最多等待 10 分钟
 - `EMBEDDING_MODEL` 建议中文知识库使用 `bge-m3`
 - `VISION_MODEL` 用于图片识别入库
 - `LOG_QUERY_ENABLED=true` 且存在有效日志查询密钥时才会注册日志查询接口和 Dashboard
@@ -231,6 +245,8 @@ LOG_EVENT_RETENTION_DAYS=90
 - 兼容迁移：开启日志但尚未设置 `LOG_QUERY_API_KEY` 时，旧 `API_KEY` 暂时只作为日志密钥使用；建议尽快将其移动到 `LOG_QUERY_API_KEY` 并清空 `API_KEY`
 - HTTP 日志只保存路由模板，不保存带查询参数的完整 URL
 - 问题预览和访问 IP 默认不记录；错误堆栈只输出到经过脱敏的 Pino 日志
+- Agent 默认关闭；启用后使用独立 `AGENT_API_KEY`，不会让普通聊天和知识库接口同时要求该 Key
+- 当前安装的 `qwen3:8b` 没有声明 tools 能力，Agent V0 默认使用已验证支持工具调用的 `qwen2.5:7b`
 - `.env` 修改后必须重启后端才生效
 
 ## Qdrant 向量后端
@@ -559,7 +575,12 @@ GET /api/providers
       "id": "ollama",
       "name": "Ollama",
       "defaultModel": "qwen3:8b",
-      "configured": true
+      "configured": true,
+      "capabilities": {
+        "chatStream": true,
+        "agentTools": false
+      },
+      "agentModels": []
     },
     {
       "id": "openai",
@@ -582,6 +603,38 @@ GET /api/providers
 ```http
 GET /api/tags
 ```
+
+## Agent V0
+
+Agent V0 是独立于 `/api/chat` 的受控运行环境，当前只支持后端 Ollama、`calculator-v0` 和无副作用计算器。Agent 关闭时路由不会注册。
+
+```env
+AGENT_ENABLED=true
+AGENT_ACCESS_MODE=api-key
+AGENT_API_KEY=replace-with-a-random-secret
+AGENT_OLLAMA_MODELS=qwen2.5:7b
+```
+
+请求示例：
+
+```http
+POST /api/agent
+Content-Type: application/json
+x-agent-api-key: replace-with-a-random-secret
+
+{
+  "agentProfile": "calculator-v0",
+  "provider": "ollama",
+  "model": "qwen2.5:7b",
+  "messages": [
+    { "role": "user", "content": "请计算 12 乘以 35" }
+  ]
+}
+```
+
+响应类型为 `application/x-ndjson`。每个事件都包含 `version`、`sequence`、`requestId`、`agentRunId`、`step` 和 `timestamp`。一次运行只允许一个终态：`agent_completed`、`agent_failed` 或 `agent_cancelled`。
+
+前端不能提交 System Prompt、工具列表、Tool Call、Tool Result 或模型厂商 API Key。执行过程只展示模型阶段和脱敏工具状态，不返回原始思维链、完整工具参数或内部错误。
 
 ## 指标和日志接口
 

@@ -89,9 +89,13 @@ export async function agentRoutes(app: FastifyInstance) {
         const onReplyClose = () => {
             if (!reply.raw.writableEnded) abortForClient()
         }
+        const onOutputClose = () => {
+            if (!output.writableEnded) abortForClient()
+        }
         request.raw.once('aborted', abortForClient)
         reply.raw.once('close', onReplyClose)
         output.once('error', abortForClient)
+        output.once('close', onOutputClose)
         reply.headers({
             'Content-Type': 'application/x-ndjson; charset=utf-8',
             'Cache-Control': 'no-cache, no-transform',
@@ -111,6 +115,7 @@ export async function agentRoutes(app: FastifyInstance) {
             request.raw.removeListener('aborted', abortForClient)
             reply.raw.removeListener('close', onReplyClose)
             output.removeListener('error', abortForClient)
+            output.removeListener('close', onOutputClose)
         })
         return reply.send(output)
     })
