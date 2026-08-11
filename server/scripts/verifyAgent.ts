@@ -4,6 +4,12 @@ import { AgentModelQueue } from '../agent/modelQueue'
 import { calculatorTool } from '../agent/calculatorTool'
 import { getAgentProfile } from '../agent/profiles'
 import { ToolRegistry } from '../agent/toolRegistry'
+import {
+    ollamaAgentProvider,
+    parseOllamaAgentResponse,
+    toOllamaAgentMessages,
+    toOllamaTool,
+} from '../llm/ollamaAgentProvider'
 import type {
     AgentLimits,
     AgentMessage,
@@ -272,6 +278,81 @@ async function verifyToolCancellationAndResultLimit() {
     assert(resultMessage?.role === 'tool' && resultMessage.content.includes('已截断'), 'tool result truncation marker missing')
 }
 
+async function verifyOllamaAgentProtocol() {
+    const callResult = parseOllamaAgentResponse({
+        message: {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+                { function: { name: 'calculator', arguments: { operation: 'multiply', left: 12, right: 35 } } },
+                { id: 'provided-id', function: { name: 'calculator', arguments: '{"operation":"add","left":1,"right":2}' } },
+            ],
+        },
+        done: true,
+        done_reason: 'stop',
+        prompt_eval_count: 20,
+        eval_count: 10,
+    })
+    assert(callResult.finishReason === 'tool_calls' && callResult.message.toolCalls.length === 2, `Ollama tool calls failed: ${JSON.stringify(callResult)}`)
+    assert(callResult.message.toolCalls[0]?.id.startsWith('ollama-'), 'Ollama missing tool ID should be generated')
+    assert(callResult.message.toolCalls[1]?.id === 'provided-id', 'Ollama provided tool ID should be preserved')
+    assert(callResult.usage?.inputTokens === 20 && callResult.usage.outputTokens === 10, `Ollama usage failed: ${JSON.stringify(callResult.usage)}`)
+
+    const messages = toOllamaAgentMessages([
+        { role: 'system', content: 'system' },
+        { role: 'assistant', content: '', toolCalls: callResult.message.toolCalls },
+        { role: 'tool', toolCallId: callResult.message.toolCalls[0]!.id, name: 'calculator', content: '420', isError: false },
+    ])
+    assert(Array.isArray(messages[1]?.tool_calls) && messages[2]?.tool_name === 'calculator', `Ollama messages failed: ${JSON.stringify(messages)}`)
+
+    const tool = toOllamaTool(calculatorTool.definition) as { function?: { parameters?: unknown } }
+    assert(Boolean(tool.function?.parameters), `Ollama tool schema missing: ${JSON.stringify(tool)}`)
+
+    const invalid = await captureAgentError(async () => parseOllamaAgentResponse({
+        message: { role: 'assistant', tool_calls: [{ function: { name: 'calculator', arguments: 'not-json' } }] },
+    }))
+    assert(invalid.code === 'MODEL_RESPONSE_INVALID', `Ollama invalid arguments should fail: ${invalid.code}`)
+}
+
+async function verifyOllamaAgentPreCancellation() {
+    const controller = new AbortController()
+    controller.abort()
+    const error = await captureAgentError(() => ollamaAgentProvider.runTurn({
+        model: 'qwen2.5:7b',
+        messages: [{ role: 'user', content: '不会实际请求' }],
+        tools: [calculatorTool.definition],
+    }, controller.signal))
+    assert(error.code === 'CLIENT_ABORTED', `Ollama pre-cancel should not call network: ${error.code}`)
+}
+
+async function verifyOllamaAgentRequest() {
+    const originalFetch = globalThis.fetch
+    const captured: { body?: Record<string, unknown> } = {}
+    globalThis.fetch = async (_input, init) => {
+        captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response(JSON.stringify({
+            message: { role: 'assistant', content: 'mock answer' },
+            done: true,
+            done_reason: 'stop',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    try {
+        const result = await ollamaAgentProvider.runTurn({
+            model: 'qwen2.5:7b',
+            messages: [{ role: 'user', content: 'mock request' }],
+            tools: [calculatorTool.definition],
+        }, new AbortController().signal)
+        const requestBody = captured.body
+        assert(requestBody, 'Ollama request body should be captured')
+        assert(result.message.content === 'mock answer', `Ollama request result failed: ${JSON.stringify(result)}`)
+        assert(requestBody.model === 'qwen2.5:7b', `Ollama request model failed: ${JSON.stringify(requestBody)}`)
+        assert(requestBody.stream === false && requestBody.think === false, `Ollama Agent must use non-streaming without raw thinking: ${JSON.stringify(requestBody)}`)
+        assert(Array.isArray(requestBody.tools) && requestBody.tools.length === 1, `Ollama request tools failed: ${JSON.stringify(requestBody)}`)
+    } finally {
+        globalThis.fetch = originalFetch
+    }
+}
+
 function runner(
     model: AgentModelClient,
     executeTool: ((call: AgentToolCall, signal: AbortSignal) => Promise<{ content: string; isError: boolean }>) | undefined = undefined,
@@ -347,9 +428,12 @@ async function main() {
     await verifyRunnerUsesModelQueue()
     await verifyToolRegistryAndCalculator()
     await verifyToolCancellationAndResultLimit()
+    await verifyOllamaAgentProtocol()
+    await verifyOllamaAgentPreCancellation()
+    await verifyOllamaAgentRequest()
     console.log(JSON.stringify({
         ok: true,
-        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'tool-cancel-result-limit'],
+        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request'],
     }))
 }
 

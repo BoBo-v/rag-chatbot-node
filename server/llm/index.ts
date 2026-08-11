@@ -1,6 +1,7 @@
 import { anthropicProvider } from './anthropicProvider'
 import { ollamaProvider } from './ollamaProvider'
 import { openaiProvider } from './openaiProvider'
+import { ollamaAgentProvider } from './ollamaAgentProvider'
 import { config } from '../utils/config'
 import type { AgentModelClient } from '../agent/types'
 import type { ChatProviderClient, ChatProviderId, ModelProviderInfo } from './types'
@@ -17,7 +18,7 @@ export interface AgentProviderRegistration {
 }
 
 const providers = new Map<ChatProviderId, ModelProviderRegistration>([
-    ['ollama', { chat: ollamaProvider, agentModels: config.agentOllamaModels }],
+    ['ollama', { chat: ollamaProvider, agent: ollamaAgentProvider, agentModels: config.agentOllamaModels }],
     ['openai', { chat: openaiProvider, agentModels: [] }],
     ['anthropic', { chat: anthropicProvider, agentModels: [] }],
 ])
