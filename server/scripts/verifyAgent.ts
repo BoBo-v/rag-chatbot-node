@@ -384,8 +384,31 @@ async function verifyAgentEventContract() {
     assert(!isLoopbackAddress('192.168.1.10'), 'LAN address must not be treated as loopback')
 }
 
+async function verifyToolTimeout() {
+    const timeoutLimits = { ...limits, toolTimeoutMs: 20 }
+    const model = new FakeModel([
+        assistantTurn('', [toolCall('slow-tool', 1, 2)], 'tool_calls'),
+    ])
+    const timedOut = runnerWithLimits(model, timeoutLimits, async (_call, signal) => {
+        return new Promise((_, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+    }).run(runInput())
+    const error = await captureAgentError(() => timedOut)
+    assert(error.code === 'TOOL_TIMEOUT', `tool timeout should be classified: ${error.code}`)
+}
+
 function runner(
     model: AgentModelClient,
+    executeTool: ((call: AgentToolCall, signal: AbortSignal) => Promise<{ content: string; isError: boolean }>) | undefined = undefined,
+    modelScheduler?: AgentModelScheduler
+) {
+    return runnerWithLimits(model, limits, executeTool, modelScheduler)
+}
+
+function runnerWithLimits(
+    model: AgentModelClient,
+    runnerLimits: AgentLimits,
     executeTool: ((call: AgentToolCall, signal: AbortSignal) => Promise<{ content: string; isError: boolean }>) | undefined = undefined,
     modelScheduler?: AgentModelScheduler
 ) {
@@ -402,7 +425,7 @@ function runner(
             },
         }],
         executeTool: executeTool ?? (async call => ({ content: call.id, isError: false })),
-        limits,
+        limits: runnerLimits,
     })
 }
 
@@ -463,9 +486,10 @@ async function main() {
     await verifyOllamaAgentPreCancellation()
     await verifyOllamaAgentRequest()
     await verifyAgentEventContract()
+    await verifyToolTimeout()
     console.log(JSON.stringify({
         ok: true,
-        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access'],
+        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout'],
     }))
 }
 

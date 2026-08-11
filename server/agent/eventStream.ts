@@ -17,6 +17,7 @@ export interface AgentEventContext {
 export class AgentEventWriter {
     private sequence = 0
     private terminalSent = false
+    private writeChain: Promise<void> = Promise.resolve()
 
     constructor(
         private readonly output: Writable,
@@ -30,10 +31,6 @@ export class AgentEventWriter {
     ): Promise<boolean> {
         if (this.terminalSent) return false
         if (terminalEventTypes.has(type)) this.terminalSent = true
-        if (this.output.destroyed || this.output.writableEnded) {
-            throw new AgentError('CLIENT_ABORTED', 'Agent 事件连接已关闭。', 499)
-        }
-
         const event: AgentEvent = {
             version: agentEventVersion,
             sequence: ++this.sequence,
@@ -44,13 +41,21 @@ export class AgentEventWriter {
             type,
             data,
         }
-        if (!this.output.write(`${JSON.stringify(event)}\n`)) {
-            await once(this.output, 'drain')
-        }
+        this.writeChain = this.writeChain.then(() => this.writeEvent(event))
+        await this.writeChain
         return true
     }
 
     hasTerminalEvent(): boolean {
         return this.terminalSent
+    }
+
+    private async writeEvent(event: AgentEvent): Promise<void> {
+        if (this.output.destroyed || this.output.writableEnded) {
+            throw new AgentError('CLIENT_ABORTED', 'Agent 事件连接已关闭。', 499)
+        }
+        if (!this.output.write(`${JSON.stringify(event)}\n`)) {
+            await once(this.output, 'drain')
+        }
     }
 }

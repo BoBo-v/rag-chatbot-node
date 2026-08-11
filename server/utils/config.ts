@@ -139,6 +139,7 @@ export const config = {
     agentRunTimeoutMs: Math.min(3_600_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_RUN_TIMEOUT_MS', 1_200_000)))),
     agentConnectTimeoutMs: Math.min(120_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_CONNECT_TIMEOUT_MS', 15_000)))),
     agentStreamIdleTimeoutMs: Math.min(600_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_STREAM_IDLE_TIMEOUT_MS', 180_000)))),
+    agentHeartbeatIntervalMs: Math.min(60_000, Math.max(5000, Math.floor(numberFromEnv('AGENT_HEARTBEAT_INTERVAL_MS', 15_000)))),
     agentToolTimeoutMs: Math.min(60_000, Math.max(100, Math.floor(numberFromEnv('AGENT_TOOL_TIMEOUT_MS', 5000)))),
     agentToolResultMaxChars: Math.min(20_000, Math.max(256, Math.floor(numberFromEnv('AGENT_TOOL_RESULT_MAX_CHARS', 4000)))),
     agentMessageMaxCount: 20,

@@ -79,6 +79,18 @@ export async function agentRoutes(app: FastifyInstance) {
         const prepared = prepareAgentRun(body)
         const agentRunId = randomUUID()
         const output = new PassThrough()
+        const runController = new AbortController()
+        const abortForClient = () => abortController(runController, new AgentError(
+            'CLIENT_ABORTED',
+            'Agent 请求已由客户端取消。',
+            499
+        ))
+        const onReplyClose = () => {
+            if (!reply.raw.writableEnded) abortForClient()
+        }
+        request.raw.once('aborted', abortForClient)
+        reply.raw.once('close', onReplyClose)
+        output.once('error', abortForClient)
         reply.headers({
             'Content-Type': 'application/x-ndjson; charset=utf-8',
             'Cache-Control': 'no-cache, no-transform',
@@ -89,10 +101,15 @@ export async function agentRoutes(app: FastifyInstance) {
 
         void streamAgentRun({
             output,
+            signal: runController.signal,
             requestId: request.id,
             agentRunId,
             body,
             ...prepared,
+        }).finally(() => {
+            request.raw.removeListener('aborted', abortForClient)
+            reply.raw.removeListener('close', onReplyClose)
+            output.removeListener('error', abortForClient)
         })
         return reply.send(output)
     })
@@ -119,6 +136,7 @@ function prepareAgentRun(body: AgentRunRequest) {
 
 async function streamAgentRun(input: {
     output: PassThrough
+    signal: AbortSignal
     requestId: string
     agentRunId: string
     body: AgentRunRequest
@@ -129,13 +147,26 @@ async function streamAgentRun(input: {
         requestId: input.requestId,
         agentRunId: input.agentRunId,
     })
-    const controller = new AbortController()
+    const runTimeoutController = new AbortController()
+    const runTimeout = setTimeout(() => {
+        runTimeoutController.abort(new AgentError(
+            'AGENT_TIMEOUT',
+            `Agent 整次运行超过 ${config.agentRunTimeoutMs} ms。`,
+            504
+        ))
+    }, config.agentRunTimeoutMs)
+    const signal = AbortSignal.any([input.signal, runTimeoutController.signal])
+    let currentStep = 0
+    let heartbeat: ReturnType<typeof setInterval> | undefined
     try {
         await writer.emit('agent_started', 0, {
             agentProfile: input.profile.id,
             provider: input.body.provider,
             model: input.body.model,
         })
+        heartbeat = setInterval(() => {
+            void writer.emit('heartbeat', currentStep, { phase: 'running' }).catch(() => undefined)
+        }, config.agentHeartbeatIntervalMs)
         const runner = new AgentRunner({
             modelClient: input.provider.client,
             modelScheduler: modelQueue,
@@ -154,8 +185,11 @@ async function streamAgentRun(input: {
             model: input.body.model,
             systemPrompt: input.profile.systemPrompt,
             messages: input.body.messages,
-            signal: controller.signal,
-            emit: event => writer.emit(event.type, event.step, event.data).then(() => undefined),
+            signal,
+            emit: event => {
+                currentStep = event.step
+                return writer.emit(event.type, event.step, event.data).then(() => undefined)
+            },
         })
         await writer.emit('agent_completed', result.modelTurns, {
             finishReason: result.finishReason,
@@ -167,7 +201,7 @@ async function streamAgentRun(input: {
         const agentError = toAgentError(error)
         const terminalType = agentError.code === 'CLIENT_ABORTED' ? 'agent_cancelled' : 'agent_failed'
         try {
-            await writer.emit(terminalType, 0, {
+            await writer.emit(terminalType, currentStep, {
                 code: agentError.code,
                 message: agentError.message,
             })
@@ -175,8 +209,14 @@ async function streamAgentRun(input: {
             // The client may already have closed the stream.
         }
     } finally {
-        input.output.end()
+        clearTimeout(runTimeout)
+        if (heartbeat) clearInterval(heartbeat)
+        if (!input.output.destroyed && !input.output.writableEnded) input.output.end()
     }
+}
+
+function abortController(controller: AbortController, reason: AgentError): void {
+    if (!controller.signal.aborted) controller.abort(reason)
 }
 
 async function authorizeAgentRequest(request: FastifyRequest): Promise<void> {

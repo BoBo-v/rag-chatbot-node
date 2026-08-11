@@ -184,12 +184,23 @@ export class AgentRunner {
     }
 
     private async runTool(call: AgentToolCall, signal: AbortSignal): Promise<AgentToolExecutionResult> {
+        const timeoutController = new AbortController()
+        const timeout = setTimeout(() => {
+            timeoutController.abort(new AgentError(
+                'TOOL_TIMEOUT',
+                `工具 ${call.name} 执行超时。`,
+                504
+            ))
+        }, this.options.limits.toolTimeoutMs)
+        const combinedSignal = AbortSignal.any([signal, timeoutController.signal])
         try {
-            return await this.options.executeTool(cloneToolCall(call), signal)
+            return await this.options.executeTool(cloneToolCall(call), combinedSignal)
         } catch (error) {
-            throwIfAborted(signal)
+            throwIfAborted(combinedSignal)
             if (isAgentError(error)) throw error
             throw new AgentError('TOOL_EXECUTION_FAILED', `工具 ${call.name} 执行失败。`, 500, { cause: error })
+        } finally {
+            clearTimeout(timeout)
         }
     }
 }
