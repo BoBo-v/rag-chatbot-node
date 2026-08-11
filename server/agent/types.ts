@@ -76,6 +76,33 @@ export interface AgentModelClient {
     runTurn(input: AgentTurnInput, signal: AbortSignal): Promise<AgentTurnResult>
 }
 
+export interface AgentToolExecutionResult {
+    content: string
+    isError: boolean
+}
+
+export type AgentToolExecutor = (
+    call: AgentToolCall,
+    signal: AbortSignal
+) => Promise<AgentToolExecutionResult>
+
+export interface AgentRunnerEvent {
+    type: Exclude<AgentEventType, 'agent_started' | 'agent_queued' | 'heartbeat' | 'agent_completed' | 'agent_failed' | 'agent_cancelled'>
+    step: number
+    data: Record<string, unknown>
+}
+
+export type AgentRunnerEventSink = (event: AgentRunnerEvent) => void | Promise<void>
+
+export interface AgentRunResult {
+    message: Extract<AgentMessage, { role: 'assistant' }>
+    messages: AgentMessage[]
+    finishReason: AgentFinishReason
+    modelTurns: number
+    toolCallCount: number
+    usage?: AgentUsage
+}
+
 export interface AgentRunRequest {
     agentProfile: AgentProfileId
     provider: ChatProviderId
