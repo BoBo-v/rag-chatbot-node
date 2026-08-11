@@ -54,6 +54,10 @@ function logRemoteAddressFromEnv(): 'none' | 'masked' | 'full' {
     return 'none'
 }
 
+function agentAccessModeFromEnv(): 'api-key' | 'loopback' {
+    return process.env.AGENT_ACCESS_MODE?.trim().toLowerCase() === 'loopback' ? 'loopback' : 'api-key'
+}
+
 const chunkMaxLen = Math.min(3000, Math.max(100, numberFromEnv('CHUNK_MAX_LEN', 700)))
 const chunkOverlap = Math.min(
     chunkMaxLen - 1,
@@ -117,4 +121,24 @@ export const config = {
     logHttpRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_HTTP_RETENTION_DAYS', 30)))),
     logAiRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_AI_RETENTION_DAYS', 90)))),
     logEventRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_EVENT_RETENTION_DAYS', 90)))),
+    agentEnabled: booleanFromEnv('AGENT_ENABLED', false),
+    agentAccessMode: agentAccessModeFromEnv(),
+    agentApiKey: process.env.AGENT_API_KEY || '',
+    agentOllamaModels: listFromEnv('AGENT_OLLAMA_MODELS', ['qwen3:8b']),
+    agentMaxModelTurns: 3,
+    agentMaxToolCalls: 3,
+    agentMaxParallelToolCalls: 1,
+    agentModelConcurrency: 1,
+    agentQueueMaxSize: Math.min(50, Math.max(1, Math.floor(numberFromEnv('AGENT_QUEUE_MAX_SIZE', 5)))),
+    agentQueueTimeoutMs: Math.min(300_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_QUEUE_TIMEOUT_MS', 30_000)))),
+    agentOllamaModelTimeoutMs: Math.min(3_600_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_OLLAMA_MODEL_TIMEOUT_MS', 600_000)))),
+    agentRunTimeoutMs: Math.min(3_600_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_RUN_TIMEOUT_MS', 1_200_000)))),
+    agentConnectTimeoutMs: Math.min(120_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_CONNECT_TIMEOUT_MS', 15_000)))),
+    agentStreamIdleTimeoutMs: Math.min(600_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_STREAM_IDLE_TIMEOUT_MS', 180_000)))),
+    agentToolTimeoutMs: Math.min(60_000, Math.max(100, Math.floor(numberFromEnv('AGENT_TOOL_TIMEOUT_MS', 5000)))),
+    agentToolResultMaxChars: Math.min(20_000, Math.max(256, Math.floor(numberFromEnv('AGENT_TOOL_RESULT_MAX_CHARS', 4000)))),
+    agentMessageMaxCount: 20,
+    agentMessageContentMaxLength: 8000,
+    agentMessageTotalMaxChars: 30_000,
+    agentEstimatedInputMaxTokens: 12_000,
 }
