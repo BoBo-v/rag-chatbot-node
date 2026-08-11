@@ -67,6 +67,9 @@ const globalApiKey = process.env.API_KEY || ''
 const logQueryEnabled = booleanFromEnv('LOG_QUERY_ENABLED', false)
 const explicitLogQueryApiKey = process.env.LOG_QUERY_API_KEY || ''
 const useLegacyApiKeyForLogs = logQueryEnabled && !explicitLogQueryApiKey && Boolean(globalApiKey)
+const agentEnabled = booleanFromEnv('AGENT_ENABLED', false)
+const agentAccessMode = agentAccessModeFromEnv()
+const agentApiKey = process.env.AGENT_API_KEY || ''
 
 export const config = {
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
@@ -121,9 +124,10 @@ export const config = {
     logHttpRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_HTTP_RETENTION_DAYS', 30)))),
     logAiRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_AI_RETENTION_DAYS', 90)))),
     logEventRetentionDays: Math.min(3650, Math.max(1, Math.floor(numberFromEnv('LOG_EVENT_RETENTION_DAYS', 90)))),
-    agentEnabled: booleanFromEnv('AGENT_ENABLED', false),
-    agentAccessMode: agentAccessModeFromEnv(),
-    agentApiKey: process.env.AGENT_API_KEY || '',
+    agentEnabled,
+    agentAccessMode,
+    agentApiKey,
+    agentAvailable: agentEnabled && (agentAccessMode === 'loopback' || Boolean(agentApiKey)),
     agentOllamaModels: listFromEnv('AGENT_OLLAMA_MODELS', ['qwen2.5:7b']),
     agentMaxModelTurns: 3,
     agentMaxToolCalls: 3,

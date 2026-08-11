@@ -13,6 +13,7 @@ import { registerSchemas } from './utils/schemas'
 import { closeVectorStore } from './utils/vectorStore'
 import { AppError, toErrorResponse } from './utils/errors'
 import { logRoutes } from './router/logs'
+import { agentRoutes } from './router/agent'
 import {
     recordApplicationEvent,
     recordHttpRequest,
@@ -31,12 +32,15 @@ export function buildApp(options: { logger?: boolean } = {}) {
                     'req.headers.authorization',
                     'req.headers.cookie',
                     'req.headers["x-api-key"]',
+                    'req.headers["x-agent-api-key"]',
                     'request.headers.authorization',
                     'request.headers.cookie',
                     'request.headers["x-api-key"]',
+                    'request.headers["x-agent-api-key"]',
                     'headers.authorization',
                     'headers.cookie',
                     'headers["x-api-key"]',
+                    'headers["x-agent-api-key"]',
                     'apiKey',
                     'openaiApiKey',
                     'anthropicApiKey',
@@ -102,6 +106,7 @@ export function buildApp(options: { logger?: boolean } = {}) {
                 { name: 'Ollama', description: 'Ollama 模型信息接口' },
                 { name: 'Metrics', description: 'AI 调用统计兼容接口' },
                 { name: 'Logs', description: '结构化运行日志查询' },
+                { name: 'Agent', description: '受控 Agent V0 接口' },
             ],
         },
     })
@@ -168,6 +173,7 @@ export function buildApp(options: { logger?: boolean } = {}) {
                 code: 'LOG_QUERY_UNAUTHORIZED',
             })
         }
+        if (request.url.startsWith('/api/agent')) return
         if (!config.apiKey || isPublicRoute(request.url)) return
 
         if (providedKeys.includes(config.apiKey)) return
@@ -182,6 +188,11 @@ export function buildApp(options: { logger?: boolean } = {}) {
     app.register(systemRoutes)
     app.register(uploadRoutes)
     app.register(chatRoutes)
+    if (config.agentAvailable) {
+        app.register(agentRoutes)
+    } else if (config.agentEnabled) {
+        app.log.warn('AGENT_ENABLED=true 但 Agent 专用鉴权配置无效，/api/agent 已隐藏。')
+    }
     if (logQueryAvailable) {
         app.register(metricsRoutes)
         app.register(logRoutes)

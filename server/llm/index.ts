@@ -39,7 +39,7 @@ export function getAgentProvider(provider: ChatProviderId): AgentProviderRegistr
 export function listChatProviders(): ModelProviderInfo[] {
     return Array.from(providers.values()).map(registration => {
         const info = registration.chat.info()
-        const agentTools = config.agentEnabled && Boolean(registration.agent) && registration.agentModels.length > 0
+        const agentTools = config.agentAvailable && Boolean(registration.agent) && registration.agentModels.length > 0
         return {
             ...info,
             capabilities: {

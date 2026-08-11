@@ -1,4 +1,6 @@
 import { AgentError } from '../agent/errors'
+import { PassThrough } from 'node:stream'
+import { AgentEventWriter } from '../agent/eventStream'
 import { AgentRunner } from '../agent/runner'
 import { AgentModelQueue } from '../agent/modelQueue'
 import { calculatorTool } from '../agent/calculatorTool'
@@ -10,6 +12,7 @@ import {
     toOllamaAgentMessages,
     toOllamaTool,
 } from '../llm/ollamaAgentProvider'
+import { isLoopbackAddress } from '../router/agent'
 import type {
     AgentLimits,
     AgentMessage,
@@ -353,6 +356,34 @@ async function verifyOllamaAgentRequest() {
     }
 }
 
+async function verifyAgentEventContract() {
+    const output = new PassThrough()
+    let body = ''
+    output.on('data', chunk => { body += chunk.toString() })
+    const writer = new AgentEventWriter(output, {
+        requestId: 'request-id',
+        agentRunId: 'agent-run-id',
+    })
+    assert(await writer.emit('agent_started', 0, { model: 'fake' }), 'first event should be emitted')
+    assert(await writer.emit('agent_completed', 1, { finishReason: 'stop' }), 'terminal event should be emitted')
+    assert(!await writer.emit('agent_failed', 1, { code: 'unexpected' }), 'second terminal event must be rejected')
+    output.end()
+    const events = body.trim().split('\n').map(line => JSON.parse(line) as {
+        version: number
+        sequence: number
+        requestId: string
+        agentRunId: string
+        type: string
+    })
+    assert(events.length === 2, `event count failed: ${body}`)
+    assert(events[0]?.version === 1 && events[0].sequence === 1 && events[1]?.sequence === 2, `event sequence failed: ${body}`)
+    assert(events.every(event => event.requestId === 'request-id' && event.agentRunId === 'agent-run-id'), `event IDs failed: ${body}`)
+    assert(writer.hasTerminalEvent(), 'terminal state should be recorded')
+
+    assert(isLoopbackAddress('127.0.0.1') && isLoopbackAddress('::1') && isLoopbackAddress('::ffff:127.0.0.1'), 'loopback addresses should be accepted')
+    assert(!isLoopbackAddress('192.168.1.10'), 'LAN address must not be treated as loopback')
+}
+
 function runner(
     model: AgentModelClient,
     executeTool: ((call: AgentToolCall, signal: AbortSignal) => Promise<{ content: string; isError: boolean }>) | undefined = undefined,
@@ -431,9 +462,10 @@ async function main() {
     await verifyOllamaAgentProtocol()
     await verifyOllamaAgentPreCancellation()
     await verifyOllamaAgentRequest()
+    await verifyAgentEventContract()
     console.log(JSON.stringify({
         ok: true,
-        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request'],
+        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access'],
     }))
 }
 
