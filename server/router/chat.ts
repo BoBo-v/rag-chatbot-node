@@ -351,6 +351,18 @@ export async function chatRoutes(app: FastifyInstance) {
                                     name: { type: 'string', description: '厂商名称' },
                                     defaultModel: { type: 'string', description: '默认模型' },
                                     configured: { type: 'boolean', description: '是否已经配置可用' },
+                                    capabilities: {
+                                        type: 'object',
+                                        properties: {
+                                            chatStream: { type: 'boolean', description: '是否支持普通文本流' },
+                                            agentTools: { type: 'boolean', description: '当前是否开放 Agent Tool Calling' },
+                                        },
+                                    },
+                                    agentModels: {
+                                        type: 'array',
+                                        items: { type: 'string' },
+                                        description: '后端允许用于 Agent 的模型白名单',
+                                    },
                                 },
                             },
                         },

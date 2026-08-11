@@ -21,3 +21,13 @@ export interface ChatProviderClient {
     info(): ChatProviderInfo
     streamChat(input: ChatStreamInput): Promise<ReadableStream<Uint8Array>>
 }
+
+export interface ModelProviderCapabilities {
+    chatStream: boolean
+    agentTools: boolean
+}
+
+export interface ModelProviderInfo extends ChatProviderInfo {
+    capabilities: ModelProviderCapabilities
+    agentModels: string[]
+}
