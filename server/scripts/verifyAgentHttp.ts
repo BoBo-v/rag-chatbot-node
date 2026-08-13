@@ -38,6 +38,8 @@ async function main() {
     process.env.AGENT_RUN_TIMEOUT_MS = '5000'
     process.env.AGENT_HEARTBEAT_INTERVAL_MS = '5000'
     process.env.AGENT_QUEUE_MAX_SIZE = '2'
+    process.env.AGENT_DEBUG_TOOL_RESULTS = 'true'
+    process.env.AGENT_DEBUG_TOOL_RESULT_MAX_CHARS = '2000'
     process.env.VECTOR_STORE_PATH = path.join(tempDir, 'vector-store.sqlite')
     process.env.OBSERVABILITY_DB_PATH = path.join(tempDir, 'observability.sqlite')
     process.env.LOG_QUERY_ENABLED = 'false'
@@ -94,6 +96,7 @@ async function main() {
         assertEventContract(completedEvents, 'agent_completed')
         assert(completedEvents.some(event => event.type === 'tool_started'), 'Agent should emit tool_started')
         assert(completedEvents.some(event => event.type === 'tool_completed' && event.data.isError === false), 'Agent should emit successful tool_completed')
+        assert(completedEvents.some(event => event.type === 'tool_completed' && event.data.result === '420'), `debug tool result missing: ${JSON.stringify(completedEvents)}`)
         assert(completedEvents.some(event => event.type === 'assistant_message' && event.data.content === '结果是 420。'), `Agent final answer missing: ${JSON.stringify(completedEvents)}`)
         assert(fake.requestBodies.every(body => body.think === false && body.stream === false), 'Ollama Agent must suppress raw thinking and streaming')
 

@@ -81,6 +81,33 @@ async function verifyToolRoundTrip() {
     assert(secondMessages.some(message => message.role === 'assistant' && message.toolCalls[0]?.id === 'call-1'), 'assistant tool call was not preserved')
     assert(secondMessages.some(message => message.role === 'tool' && message.toolCallId === 'call-1' && message.content === '420'), 'tool result was not appended')
     assert(events.map(event => event.type).join(',') === 'model_started,model_completed,tool_started,tool_completed,model_started,model_completed,assistant_message', `event order failed: ${JSON.stringify(events)}`)
+    const defaultCompleted = events.find(event => event.type === 'tool_completed')
+    assert(defaultCompleted?.data.result === undefined, `tool result should be hidden by default: ${JSON.stringify(defaultCompleted)}`)
+}
+
+async function verifyDebugToolResultEvent() {
+    const call = toolCall('debug-call', 1, 2)
+    const model = new FakeModel([
+        assistantTurn('', [call], 'tool_calls'),
+        assistantTurn('完成'),
+    ])
+    const events: AgentRunnerEvent[] = []
+    const instance = new AgentRunner({
+        modelClient: model,
+        tools: [],
+        executeTool: async () => ({
+            content: JSON.stringify({ value: 3, apiKey: 'private-key', nested: { token: 'private-token' } }),
+            isError: false,
+        }),
+        limits,
+        toolResultEvents: { enabled: true, maxChars: 100 },
+    })
+    await instance.run({ ...runInput(), emit: event => { events.push(event) } })
+    const completed = events.find(event => event.type === 'tool_completed')
+    const result = typeof completed?.data.result === 'string' ? completed.data.result : ''
+    assert(result.includes('"value": 3'), `debug tool result missing: ${JSON.stringify(completed)}`)
+    assert(!result.includes('private-key') && !result.includes('private-token'), `debug tool result leaked secrets: ${result}`)
+    assert(result.includes('[REDACTED]'), `debug tool result redaction marker missing: ${result}`)
 }
 
 async function verifyMultipleToolsAreSequential() {
@@ -583,6 +610,7 @@ async function captureAgentError(action: () => Promise<unknown>): Promise<AgentE
 async function main() {
     await verifyDirectAnswer()
     await verifyToolRoundTrip()
+    await verifyDebugToolResultEvent()
     await verifyMultipleToolsAreSequential()
     await verifyToolLimit()
     await verifyLastTurnDoesNotExecuteTool()
@@ -604,7 +632,7 @@ async function main() {
     await verifyModelInvocationRecords()
     console.log(JSON.stringify({
         ok: true,
-        checks: ['direct-answer', 'tool-round-trip', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'datetime-tool', 'agent-profiles', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout', 'model-invocation-records'],
+        checks: ['direct-answer', 'tool-round-trip', 'debug-tool-result', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'datetime-tool', 'agent-profiles', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout', 'model-invocation-records'],
     }))
 }
 

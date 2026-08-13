@@ -613,6 +613,7 @@ AGENT_ENABLED=true
 AGENT_ACCESS_MODE=api-key
 AGENT_API_KEY=replace-with-a-random-secret
 AGENT_OLLAMA_MODELS=qwen2.5:7b
+AGENT_DEBUG_TOOL_RESULTS=false
 ```
 
 请求示例：
@@ -641,7 +642,9 @@ x-agent-api-key: replace-with-a-random-secret
 
 响应类型为 `application/x-ndjson`。每个事件都包含 `version`、`sequence`、`requestId`、`agentRunId`、`step` 和 `timestamp`。一次运行只允许一个终态：`agent_completed`、`agent_failed` 或 `agent_cancelled`。
 
-前端不能提交 System Prompt、工具列表、Tool Call、Tool Result 或模型厂商 API Key。执行过程只展示模型阶段和脱敏工具状态，不返回原始思维链、完整工具参数或内部错误。
+前端不能提交 System Prompt、工具列表、Tool Call、Tool Result 或模型厂商 API Key。默认执行过程只展示模型阶段和脱敏工具状态，不返回原始思维链、完整工具参数或内部错误。
+
+本地调试可设置 `AGENT_DEBUG_TOOL_RESULTS=true`，此时 `tool_completed.data.result` 会返回经过敏感字段脱敏和长度限制的工具结果，前端执行过程会直接展示。该开关不影响工具结果继续返回给模型，生产环境应保持关闭。显示长度由 `AGENT_DEBUG_TOOL_RESULT_MAX_CHARS` 控制。
 
 ## 指标和日志接口
 

@@ -142,6 +142,8 @@ export const config = {
     agentHeartbeatIntervalMs: Math.min(60_000, Math.max(5000, Math.floor(numberFromEnv('AGENT_HEARTBEAT_INTERVAL_MS', 15_000)))),
     agentToolTimeoutMs: Math.min(60_000, Math.max(100, Math.floor(numberFromEnv('AGENT_TOOL_TIMEOUT_MS', 5000)))),
     agentToolResultMaxChars: Math.min(20_000, Math.max(256, Math.floor(numberFromEnv('AGENT_TOOL_RESULT_MAX_CHARS', 4000)))),
+    agentDebugToolResults: booleanFromEnv('AGENT_DEBUG_TOOL_RESULTS', false),
+    agentDebugToolResultMaxChars: Math.min(10_000, Math.max(256, Math.floor(numberFromEnv('AGENT_DEBUG_TOOL_RESULT_MAX_CHARS', 2000)))),
     agentMessageMaxCount: 20,
     agentMessageContentMaxLength: 8000,
     agentMessageTotalMaxChars: 30_000,

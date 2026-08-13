@@ -22,6 +22,10 @@ export interface AgentRunnerOptions {
     tools: AgentToolDefinition[]
     executeTool: AgentToolExecutor
     limits: AgentLimits
+    toolResultEvents?: {
+        enabled: boolean
+        maxChars: number
+    }
     recordModelInvocation?: AgentModelInvocationSink
 }
 
@@ -187,6 +191,9 @@ export class AgentRunner {
                         isError: result.isError,
                         resultChars: content.length,
                         durationMs: Math.round(performance.now() - startedAt),
+                        ...(this.options.toolResultEvents?.enabled
+                            ? { result: sanitizeToolResultForDebug(content, this.options.toolResultEvents.maxChars) }
+                            : {}),
                     },
                 })
             }
@@ -314,6 +321,44 @@ function truncateToolResult(content: string, maxChars: number): string {
     if (value.length <= maxChars) return value
     const marker = '\n[工具结果已截断]'
     return `${value.slice(0, Math.max(0, maxChars - marker.length))}${marker}`
+}
+
+function sanitizeToolResultForDebug(content: string, maxChars: number): string {
+    let value = redactSecrets(content)
+    try {
+        value = JSON.stringify(redactSensitiveJson(JSON.parse(content)), null, 2)
+    } catch {
+        // Tool results may be plain text rather than JSON.
+    }
+    return truncateDebugResult(value, maxChars)
+}
+
+function redactSensitiveJson(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(redactSensitiveJson)
+    if (!value || typeof value !== 'object') {
+        return typeof value === 'string' ? redactSecrets(value) : value
+    }
+
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+        key,
+        isSensitiveKey(key) ? '[REDACTED]' : redactSensitiveJson(child),
+    ]))
+}
+
+function isSensitiveKey(key: string): boolean {
+    return /authorization|api[_-]?key|token|password|secret|cookie/i.test(key)
+}
+
+function redactSecrets(value: string): string {
+    return value
+        .replace(/(authorization|x-api-key|api[_-]?key|token|password|secret|cookie)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]')
+        .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, 'Bearer [REDACTED]')
+}
+
+function truncateDebugResult(content: string, maxChars: number): string {
+    if (content.length <= maxChars) return content
+    const marker = '\n[调试结果已截断]'
+    return `${content.slice(0, Math.max(0, maxChars - marker.length))}${marker}`
 }
 
 function cloneInputMessage(message: AgentRequestMessage): AgentMessage {

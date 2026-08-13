@@ -194,6 +194,10 @@ async function streamAgentRun(input: {
             modelScheduler: modelQueue,
             tools: toolRegistry.definitionsFor(input.profile.toolNames),
             executeTool: toolRegistry.executorFor(input.profile.toolNames),
+            toolResultEvents: {
+                enabled: config.agentDebugToolResults,
+                maxChars: config.agentDebugToolResultMaxChars,
+            },
             limits: {
                 maxModelTurns: config.agentMaxModelTurns,
                 maxToolCalls: config.agentMaxToolCalls,
