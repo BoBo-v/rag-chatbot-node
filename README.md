@@ -613,6 +613,7 @@ AGENT_ENABLED=true
 AGENT_ACCESS_MODE=api-key
 AGENT_API_KEY=replace-with-a-random-secret
 AGENT_OLLAMA_MODELS=qwen2.5:7b
+AGENT_DEFAULT_TIME_ZONE=Asia/Shanghai
 AGENT_DEBUG_TOOL_RESULTS=false
 ```
 
@@ -637,8 +638,11 @@ x-agent-api-key: replace-with-a-random-secret
 
 - `calculator`：两个有限数字的加、减、乘、除
 - `datetime`：当前时间、IANA 时区转换、日期加减、时间差、日期属性分析和 Unix 时间戳转换
+- `datetime.difference_from_now`：一次计算当前时间到当地今天/明天/昨天目标时刻的差值，避免模型自行换算
 
 `datetime` 使用 ISO 8601 时间和 IANA 时区（例如 `Asia/Shanghai`）。不带 `Z` 或 UTC offset 的本地时间必须提供时区；`CST` 等有歧义的缩写会被拒绝。日期加减区分“日历日”和“固定小时”，并按真实夏令时规则计算。
+
+`AGENT_DEFAULT_TIME_ZONE` 用于用户未明确说明时区的本地时间问题。配置后 Agent 会直接采用该时区调用工具，不再追问；用户明确提供的 IANA 时区仍具有更高优先级。
 
 响应类型为 `application/x-ndjson`。每个事件都包含 `version`、`sequence`、`requestId`、`agentRunId`、`step` 和 `timestamp`。一次运行只允许一个终态：`agent_completed`、`agent_failed` 或 `agent_cancelled`。
 

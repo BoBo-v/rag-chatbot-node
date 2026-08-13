@@ -15,6 +15,7 @@ import {
     toOllamaTool,
 } from '../llm/ollamaAgentProvider'
 import { isLoopbackAddress } from '../router/agent'
+import { config } from '../utils/config'
 import type {
     AgentLimits,
     AgentMessage,
@@ -308,6 +309,56 @@ async function verifyDateTimeTool() {
     assert(!nowResult.isError && nowPayload.result.iso.startsWith('2026-08-11T12:00:00'), `datetime now failed: ${nowResult.content}`)
     assert(nowPayload.result.dayOfWeekName === '星期二', `datetime weekday failed: ${nowResult.content}`)
 
+    const defaultZoneRegistry = new ToolRegistry([createDateTimeTool(() => fixedNow, 'Asia/Shanghai')])
+    const defaultZoneExecute = defaultZoneRegistry.executorFor(['datetime'])
+    const defaultNow = await defaultZoneExecute({
+        id: 'datetime-default-now',
+        name: 'datetime',
+        arguments: { operation: 'now' },
+    }, new AbortController().signal)
+    const defaultNowPayload = JSON.parse(defaultNow.content) as any
+    assert(
+        defaultNowPayload.result.timeZone === 'Asia/Shanghai'
+            && defaultNowPayload.result.iso.startsWith('2026-08-11T12:00:00'),
+        `datetime default timezone failed: ${defaultNow.content}`
+    )
+
+    const defaultLocal = await defaultZoneExecute({
+        id: 'datetime-default-local',
+        name: 'datetime',
+        arguments: { operation: 'inspect', dateTime: '2026-08-11T17:30:00' },
+    }, new AbortController().signal)
+    const defaultLocalPayload = JSON.parse(defaultLocal.content) as any
+    assert(
+        defaultLocalPayload.result.timeZone === 'Asia/Shanghai'
+            && defaultLocalPayload.result.hour === 17
+            && defaultLocalPayload.result.minute === 30,
+        `datetime local default timezone failed: ${defaultLocal.content}`
+    )
+
+    const fromNow = await defaultZoneExecute({
+        id: 'datetime-from-now',
+        name: 'datetime',
+        arguments: { operation: 'difference_from_now', targetTime: '17:30' },
+    }, new AbortController().signal)
+    const fromNowPayload = JSON.parse(fromNow.content) as any
+    assert(
+        fromNowPayload.totalMinutes === 330
+            && fromNowPayload.relation === 'end_after_start'
+            && fromNowPayload.end.timeZone === 'Asia/Shanghai',
+        `datetime difference-from-now failed: ${fromNow.content}`
+    )
+
+    const invalidTargetTime = await defaultZoneExecute({
+        id: 'datetime-invalid-target-time',
+        name: 'datetime',
+        arguments: { operation: 'difference_from_now', targetTime: '下午5点30分' },
+    }, new AbortController().signal)
+    assert(
+        invalidTargetTime.isError && invalidTargetTime.content.includes('HH:mm'),
+        `datetime invalid target time should fail: ${JSON.stringify(invalidTargetTime)}`
+    )
+
     const converted = await invoke({
         operation: 'convert_timezone',
         dateTime: '2026-03-08T01:30:00',
@@ -379,7 +430,9 @@ async function verifyAgentProfiles() {
     const registry = new ToolRegistry([calculatorTool, dateTimeTool])
     const definitions = registry.definitionsFor(toolsProfile.toolNames)
     assert(definitions.map(definition => definition.name).join(',') === 'calculator,datetime', `tools profile definitions failed: ${JSON.stringify(definitions)}`)
-    assert(toolsProfile.systemPrompt.includes('不得猜测用户所在地'), 'tools profile should forbid guessing user timezone')
+    assert(toolsProfile.systemPrompt.includes('不要追问用户时区'), 'tools profile should use configured default timezone')
+    assert(toolsProfile.systemPrompt.includes(config.agentDefaultTimeZone), 'tools profile should expose configured default timezone')
+    assert(toolsProfile.systemPrompt.includes('difference_from_now'), 'tools profile should require direct current-time difference')
 }
 
 async function verifyToolCancellationAndResultLimit() {
