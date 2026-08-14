@@ -502,9 +502,10 @@ async function verifyOllamaAgentPreCancellation() {
 
 async function verifyOllamaAgentRequest() {
     const originalFetch = globalThis.fetch
-    const captured: { body?: Record<string, unknown> } = {}
+    const originalThinkingEnabled = config.agentOllamaThinkingEnabled
+    const captured: { bodies: Record<string, unknown>[] } = { bodies: [] }
     globalThis.fetch = async (_input, init) => {
-        captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>
+        captured.bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
         return new Response(JSON.stringify({
             message: { role: 'assistant', content: 'mock answer' },
             done: true,
@@ -512,18 +513,23 @@ async function verifyOllamaAgentRequest() {
         }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     try {
-        const result = await ollamaAgentProvider.runTurn({
-            model: 'qwen2.5:7b',
-            messages: [{ role: 'user', content: 'mock request' }],
-            tools: [calculatorTool.definition],
-        }, new AbortController().signal)
-        const requestBody = captured.body
-        assert(requestBody, 'Ollama request body should be captured')
-        assert(result.message.content === 'mock answer', `Ollama request result failed: ${JSON.stringify(result)}`)
-        assert(requestBody.model === 'qwen2.5:7b', `Ollama request model failed: ${JSON.stringify(requestBody)}`)
-        assert(requestBody.stream === false && requestBody.think === false, `Ollama Agent must use non-streaming without raw thinking: ${JSON.stringify(requestBody)}`)
-        assert(Array.isArray(requestBody.tools) && requestBody.tools.length === 1, `Ollama request tools failed: ${JSON.stringify(requestBody)}`)
+        for (const thinkingEnabled of [false, true]) {
+            config.agentOllamaThinkingEnabled = thinkingEnabled
+            const result = await ollamaAgentProvider.runTurn({
+                model: 'qwen2.5:7b',
+                messages: [{ role: 'user', content: 'mock request' }],
+                tools: [calculatorTool.definition],
+            }, new AbortController().signal)
+            const requestBody = captured.bodies.at(-1)
+            assert(requestBody, 'Ollama request body should be captured')
+            assert(result.message.content === 'mock answer', `Ollama request result failed: ${JSON.stringify(result)}`)
+            assert(requestBody.model === 'qwen2.5:7b', `Ollama request model failed: ${JSON.stringify(requestBody)}`)
+            assert(requestBody.stream === false, `Ollama Agent must use non-streaming: ${JSON.stringify(requestBody)}`)
+            assert(requestBody.think === thinkingEnabled, `Ollama Agent thinking config mismatch: ${JSON.stringify(requestBody)}`)
+            assert(Array.isArray(requestBody.tools) && requestBody.tools.length === 1, `Ollama request tools failed: ${JSON.stringify(requestBody)}`)
+        }
     } finally {
+        config.agentOllamaThinkingEnabled = originalThinkingEnabled
         globalThis.fetch = originalFetch
     }
 }

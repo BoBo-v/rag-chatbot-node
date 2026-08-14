@@ -34,6 +34,7 @@ async function main() {
     process.env.AGENT_ACCESS_MODE = 'api-key'
     process.env.AGENT_API_KEY = agentKey
     process.env.AGENT_OLLAMA_MODELS = 'qwen2.5:7b'
+    process.env.AGENT_OLLAMA_THINKING_ENABLED = 'true'
     process.env.AGENT_OLLAMA_MODEL_TIMEOUT_MS = '1000'
     process.env.AGENT_RUN_TIMEOUT_MS = '5000'
     process.env.AGENT_HEARTBEAT_INTERVAL_MS = '5000'
@@ -98,7 +99,7 @@ async function main() {
         assert(completedEvents.some(event => event.type === 'tool_completed' && event.data.isError === false), 'Agent should emit successful tool_completed')
         assert(completedEvents.some(event => event.type === 'tool_completed' && event.data.result === '420'), `debug tool result missing: ${JSON.stringify(completedEvents)}`)
         assert(completedEvents.some(event => event.type === 'assistant_message' && event.data.content === '结果是 420。'), `Agent final answer missing: ${JSON.stringify(completedEvents)}`)
-        assert(fake.requestBodies.every(body => body.think === false && body.stream === false), 'Ollama Agent must suppress raw thinking and streaming')
+        assert(fake.requestBodies.every(body => body.think === true && body.stream === false), 'Ollama Agent must apply the configured thinking mode')
 
         const dateTimeResponse = await fetch(`${baseUrl}/api/agent`, agentRequestInit(agentKey, 'time'))
         const dateTimeEvents = await readAgentEvents(dateTimeResponse)

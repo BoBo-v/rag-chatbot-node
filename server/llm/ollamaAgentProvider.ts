@@ -51,7 +51,7 @@ export const ollamaAgentProvider: AgentModelClient = {
                     messages: toOllamaAgentMessages(input.messages),
                     tools: input.tools.map(toOllamaTool),
                     stream: false,
-                    think: false,
+                    think: config.agentOllamaThinkingEnabled,
                 }),
                 signal: combinedSignal,
             })
