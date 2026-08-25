@@ -6,7 +6,7 @@ import type {
     AgentModelClient,
     AgentModelInvocationSink,
     AgentModelScheduler,
-    AgentRequestMessage,
+    AgentContextMessage,
     AgentRunResult,
     AgentRunnerEventSink,
     AgentToolCall,
@@ -32,7 +32,7 @@ export interface AgentRunnerOptions {
 export interface RunAgentInput {
     model: string
     systemPrompt: string
-    messages: AgentRequestMessage[]
+    messages: AgentContextMessage[]
     signal: AbortSignal
     emit?: AgentRunnerEventSink
 }
@@ -361,8 +361,19 @@ function truncateDebugResult(content: string, maxChars: number): string {
     return `${content.slice(0, Math.max(0, maxChars - marker.length))}${marker}`
 }
 
-function cloneInputMessage(message: AgentRequestMessage): AgentMessage {
-    if (message.role === 'assistant') return { role: 'assistant', content: message.content, toolCalls: [] }
+function cloneInputMessage(message: AgentContextMessage): AgentMessage {
+    if (message.role === 'assistant') return {
+        role: 'assistant',
+        content: message.content,
+        toolCalls: message.toolCalls.map(cloneToolCall),
+    }
+    if (message.role === 'tool') return {
+        role: 'tool',
+        toolCallId: message.toolCallId,
+        name: message.name,
+        content: message.content,
+        isError: message.isError,
+    }
     return { role: 'user', content: message.content }
 }
 

@@ -28,6 +28,8 @@ export type AgentMessage =
         isError: boolean
     }
 
+export type AgentContextMessage = Exclude<AgentMessage, { role: 'system' }>
+
 export type AgentFinishReason =
     | 'stop'
     | 'tool_calls'
@@ -142,6 +144,8 @@ export interface AgentRunRequest {
     agentProfile: AgentProfileId
     provider: ChatProviderId
     model: string
+    agentSessionId?: string
+    agentTurnId?: string
     messages: AgentRequestMessage[]
 }
 

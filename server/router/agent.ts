@@ -4,12 +4,13 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { AgentError, isAgentError } from '../agent/errors'
 import { AgentEventWriter } from '../agent/eventStream'
 import { AgentModelQueue } from '../agent/modelQueue'
+import { agentSessionStore } from '../agent/sessionStore'
 import { getAgentProfile } from '../agent/profiles'
 import { AgentRunner } from '../agent/runner'
 import { calculatorTool } from '../agent/calculatorTool'
 import { dateTimeTool } from '../agent/dateTimeTool'
 import { ToolRegistry } from '../agent/toolRegistry'
-import { agentProfileIds, type AgentRunRequest } from '../agent/types'
+import { agentProfileIds, type AgentContextMessage, type AgentRunRequest } from '../agent/types'
 import { getAgentProvider } from '../llm'
 import { config } from '../utils/config'
 import { AppError } from '../utils/errors'
@@ -17,6 +18,7 @@ import { estimateTokens } from '../utils/tokenEstimator'
 import { recordAgentModelInvocation, recordApplicationEvent } from '../observability/collector'
 
 const modelNamePattern = '^[A-Za-z0-9._:/@+-]+$'
+const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
 const toolRegistry = new ToolRegistry([calculatorTool, dateTimeTool])
 const modelQueue = new AgentModelQueue({
     concurrency: config.agentModelConcurrency,
@@ -44,6 +46,18 @@ export async function agentRoutes(app: FastifyInstance) {
                 properties: {
                     agentProfile: { type: 'string', enum: [...agentProfileIds] },
                     provider: { type: 'string', enum: ['ollama'] },
+                    agentSessionId: {
+                        type: 'string',
+                        minLength: 1,
+                        maxLength: 64,
+                        pattern: uuidPattern,
+                    },
+                    agentTurnId: {
+                        type: 'string',
+                        minLength: 1,
+                        maxLength: 64,
+                        pattern: uuidPattern,
+                    },
                     model: {
                         type: 'string',
                         minLength: 1,
@@ -123,11 +137,12 @@ export async function agentRoutes(app: FastifyInstance) {
 }
 
 function prepareAgentRun(body: AgentRunRequest) {
-    const totalChars = body.messages.reduce((sum, message) => sum + message.content.length, 0)
+    const messages = agentSessionStore.resolveMessages(body.agentSessionId, body.messages, body.agentTurnId)
+    const totalChars = messages.reduce((sum, message) => sum + message.content.length, 0)
     if (totalChars > config.agentMessageTotalMaxChars) {
         throw new AppError(400, 'AGENT_INVALID_REQUEST', `Agent 消息总字符数不能超过 ${config.agentMessageTotalMaxChars}。`)
     }
-    const estimatedTokens = estimateTokens(body.messages.map(message => message.content).join('\n'))
+    const estimatedTokens = estimateTokens(messages.map(message => message.content).join('\n'))
     if (estimatedTokens > config.agentEstimatedInputMaxTokens) {
         throw new AppError(400, 'AGENT_INVALID_REQUEST', `Agent 估算输入 Token 不能超过 ${config.agentEstimatedInputMaxTokens}。`)
     }
@@ -138,7 +153,11 @@ function prepareAgentRun(body: AgentRunRequest) {
     if (!provider.allowedModels.includes(body.model)) {
         throw toAppError(new AgentError('AGENT_MODEL_NOT_ALLOWED', '当前模型不在 Agent 白名单中。', 400))
     }
-    return { profile, provider }
+    return {
+        profile,
+        provider,
+        messages,
+    }
 }
 
 async function streamAgentRun(input: {
@@ -149,6 +168,7 @@ async function streamAgentRun(input: {
     body: AgentRunRequest
     profile: ReturnType<typeof getAgentProfile>
     provider: NonNullable<ReturnType<typeof getAgentProvider>>
+    messages: AgentContextMessage[]
 }) {
     const writer = new AgentEventWriter(input.output, {
         requestId: input.requestId,
@@ -218,7 +238,7 @@ async function streamAgentRun(input: {
         const result = await runner.run({
             model: input.body.model,
             systemPrompt: input.profile.systemPrompt,
-            messages: input.body.messages,
+            messages: input.messages,
             signal,
             emit: event => {
                 currentStep = event.step
@@ -226,6 +246,9 @@ async function streamAgentRun(input: {
                 return writer.emit(event.type, event.step, event.data).then(() => undefined)
             },
         })
+        if (input.body.agentSessionId) {
+            agentSessionStore.save(input.body.agentSessionId, result.messages, input.body.agentTurnId)
+        }
         await writer.emit('agent_completed', result.modelTurns, {
             finishReason: result.finishReason,
             modelTurns: result.modelTurns,

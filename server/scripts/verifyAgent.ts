@@ -8,6 +8,7 @@ import { Temporal } from '@js-temporal/polyfill'
 import { createDateTimeTool, dateTimeTool } from '../agent/dateTimeTool'
 import { getAgentProfile } from '../agent/profiles'
 import { ToolRegistry } from '../agent/toolRegistry'
+import { AgentSessionStore } from '../agent/sessionStore'
 import {
     ollamaAgentProvider,
     parseOllamaAgentResponse,
@@ -596,6 +597,40 @@ async function verifyModelInvocationRecords() {
     assert(records.every(record => record.inputChars > 0 && record.latencyMs >= 0), `invocation sizes failed: ${JSON.stringify(records)}`)
 }
 
+function verifyAgentSessionContext() {
+    const store = new AgentSessionStore()
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const toolCall: AgentToolCall = {
+        id: 'datetime-call-1',
+        name: 'datetime',
+        arguments: { operation: 'now' },
+    }
+    store.save(sessionId, [
+        { role: 'system', content: 'system' },
+        { role: 'user', content: '现在几点' },
+        { role: 'assistant', content: '', toolCalls: [toolCall] },
+        { role: 'tool', toolCallId: toolCall.id, name: 'datetime', content: '{"hour":12}', isError: false },
+        { role: 'assistant', content: '现在是 12 点', toolCalls: [] },
+    ], 'turn-1')
+
+    const nextTurn = store.resolveMessages(sessionId, [
+        { role: 'user', content: '现在几点' },
+        { role: 'assistant', content: '现在是 12 点' },
+        { role: 'user', content: '那北京呢' },
+    ], 'turn-2')
+    assert(nextTurn.length === 5, `session context length failed: ${JSON.stringify(nextTurn)}`)
+    assert(nextTurn[1]?.role === 'assistant' && nextTurn[1].toolCalls[0]?.id === toolCall.id, 'session assistant tool call was lost')
+    assert(nextTurn[2]?.role === 'tool' && nextTurn[2].toolCallId === toolCall.id, 'session tool result was lost')
+    const nextUser = nextTurn.at(-1)
+    assert(nextUser?.role === 'user' && nextUser.content === '那北京呢', 'new session user message was not appended')
+
+    const retry = store.resolveMessages(sessionId, [{ role: 'user', content: '现在几点' }], 'turn-1')
+    assert(retry.length === 1 && retry[0]?.role === 'user', `same turn retry should replace prior chain: ${JSON.stringify(retry)}`)
+
+    const repeatedText = store.resolveMessages(sessionId, [{ role: 'user', content: '现在几点' }], 'turn-3')
+    assert(repeatedText.length === 5, 'same text in a new turn should not be treated as retry')
+}
+
 function runner(
     model: AgentModelClient,
     executeTool: ((call: AgentToolCall, signal: AbortSignal) => Promise<{ content: string; isError: boolean }>) | undefined = undefined,
@@ -689,9 +724,10 @@ async function main() {
     await verifyAgentEventContract()
     await verifyToolTimeout()
     await verifyModelInvocationRecords()
+    verifyAgentSessionContext()
     console.log(JSON.stringify({
         ok: true,
-        checks: ['direct-answer', 'tool-round-trip', 'debug-tool-result', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'datetime-tool', 'agent-profiles', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout', 'model-invocation-records'],
+        checks: ['direct-answer', 'tool-round-trip', 'debug-tool-result', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'datetime-tool', 'agent-profiles', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout', 'model-invocation-records', 'agent-session-context'],
     }))
 }
 
