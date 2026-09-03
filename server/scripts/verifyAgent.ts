@@ -15,6 +15,18 @@ import {
     toOllamaAgentMessages,
     toOllamaTool,
 } from '../llm/ollamaAgentProvider'
+import {
+    anthropicAgentProvider,
+    parseAnthropicAgentResponse,
+    toAnthropicAgentMessages,
+    toAnthropicTool,
+} from '../llm/anthropicAgentProvider'
+import {
+    openaiAgentProvider,
+    parseOpenAiAgentResponse,
+    toOpenAiAgentInput,
+    toOpenAiTool,
+} from '../llm/openaiAgentProvider'
 import { isLoopbackAddress } from '../router/agent'
 import { config } from '../utils/config'
 import type {
@@ -535,6 +547,153 @@ async function verifyOllamaAgentRequest() {
     }
 }
 
+async function verifyOpenAiAgentProtocol() {
+    const callResult = parseOpenAiAgentResponse({
+        status: 'completed',
+        output: [
+            {
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'I will calculate that.' }],
+            },
+            {
+                type: 'function_call',
+                call_id: 'openai-call-1',
+                name: 'calculator',
+                arguments: '{"operation":"multiply","left":12,"right":35}',
+            },
+            {
+                type: 'function_call',
+                name: 'calculator',
+                arguments: { operation: 'add', left: 1, right: 2 },
+            },
+        ],
+        usage: { input_tokens: 20, output_tokens: 10 },
+    })
+    assert(callResult.finishReason === 'tool_calls' && callResult.message.toolCalls.length === 2, `OpenAI tool calls failed: ${JSON.stringify(callResult)}`)
+    assert(callResult.message.toolCalls[0]?.id === 'openai-call-1', 'OpenAI call ID should be preserved')
+    assert(callResult.message.toolCalls[0]?.arguments.left === 12, 'OpenAI tool arguments should be parsed')
+    assert(callResult.message.toolCalls[1]?.id.startsWith('openai-'), 'OpenAI missing call ID should be generated')
+    assert(callResult.usage?.inputTokens === 20 && callResult.usage.outputTokens === 10, `OpenAI usage failed: ${JSON.stringify(callResult.usage)}`)
+
+    const messages = toOpenAiAgentInput([
+        { role: 'system', content: 'system' },
+        { role: 'user', content: 'calculate' },
+        { role: 'assistant', content: '', toolCalls: callResult.message.toolCalls },
+        { role: 'tool', toolCallId: 'openai-call-1', name: 'calculator', content: '420', isError: false },
+    ])
+    assert(messages.some(message => message.type === 'function_call'), `OpenAI function call history missing: ${JSON.stringify(messages)}`)
+    assert(messages.some(message => message.type === 'function_call_output' && message.call_id === 'openai-call-1'), `OpenAI function output history missing: ${JSON.stringify(messages)}`)
+
+    const tool = toOpenAiTool(calculatorTool.definition) as { type?: string; strict?: boolean; parameters?: unknown }
+    assert(tool.type === 'function' && tool.strict === true && tool.parameters, `OpenAI tool schema failed: ${JSON.stringify(tool)}`)
+
+    const direct = parseOpenAiAgentResponse({
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'partial' }] }],
+    })
+    assert(direct.finishReason === 'length' && direct.message.content === 'partial', `OpenAI finish reason failed: ${JSON.stringify(direct)}`)
+}
+
+async function verifyOpenAiAgentRequest() {
+    const originalFetch = globalThis.fetch
+    const originalApiKey = config.openaiApiKey
+    const captured: { url?: string; body?: Record<string, unknown> } = {}
+    globalThis.fetch = async (input, init) => {
+        captured.url = String(input)
+        captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response(JSON.stringify({
+            status: 'completed',
+            output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'mock answer' }] }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    try {
+        config.openaiApiKey = 'test-openai-key'
+        const result = await openaiAgentProvider.runTurn({
+            model: 'gpt-test',
+            messages: [{ role: 'user', content: 'mock request' }],
+            tools: [calculatorTool.definition],
+        }, new AbortController().signal)
+        assert(result.message.content === 'mock answer', `OpenAI request result failed: ${JSON.stringify(result)}`)
+        assert(captured.url?.endsWith('/responses'), `OpenAI endpoint failed: ${captured.url}`)
+        assert(captured.body?.model === 'gpt-test' && captured.body?.stream === false, `OpenAI request body failed: ${JSON.stringify(captured.body)}`)
+        assert(Array.isArray(captured.body?.tools) && captured.body.tools.length === 1, `OpenAI request tools failed: ${JSON.stringify(captured.body)}`)
+    } finally {
+        config.openaiApiKey = originalApiKey
+        globalThis.fetch = originalFetch
+    }
+}
+
+async function verifyAnthropicAgentProtocol() {
+    const callResult = parseAnthropicAgentResponse({
+        stop_reason: 'tool_use',
+        content: [
+            { type: 'text', text: 'I will calculate that.' },
+            {
+                type: 'tool_use',
+                id: 'anthropic-call-1',
+                name: 'calculator',
+                input: { operation: 'multiply', left: 12, right: 35 },
+            },
+        ],
+        usage: { input_tokens: 20, output_tokens: 10 },
+    })
+    assert(callResult.finishReason === 'tool_calls' && callResult.message.toolCalls.length === 1, `Anthropic tool use failed: ${JSON.stringify(callResult)}`)
+    assert(callResult.message.toolCalls[0]?.id === 'anthropic-call-1', 'Anthropic tool use ID should be preserved')
+    assert(callResult.message.toolCalls[0]?.arguments.right === 35, 'Anthropic tool arguments should be parsed')
+    assert(callResult.usage?.inputTokens === 20 && callResult.usage.outputTokens === 10, `Anthropic usage failed: ${JSON.stringify(callResult.usage)}`)
+
+    const messages = toAnthropicAgentMessages([
+        { role: 'system', content: 'system' },
+        { role: 'user', content: 'calculate' },
+        { role: 'assistant', content: '', toolCalls: callResult.message.toolCalls },
+        { role: 'tool', toolCallId: 'anthropic-call-1', name: 'calculator', content: '420', isError: false },
+    ])
+    const encodedMessages = JSON.stringify(messages)
+    assert(messages.system === 'system', `Anthropic system message failed: ${encodedMessages}`)
+    assert(encodedMessages.includes('tool_use') && encodedMessages.includes('tool_result'), `Anthropic tool history missing: ${encodedMessages}`)
+    assert(messages.messages.at(-1)?.role === 'user', `Anthropic tool result role failed: ${encodedMessages}`)
+
+    const tool = toAnthropicTool(calculatorTool.definition) as { name?: string; input_schema?: unknown }
+    assert(tool.name === 'calculator' && tool.input_schema, `Anthropic tool schema failed: ${JSON.stringify(tool)}`)
+
+    const direct = parseAnthropicAgentResponse({
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'done' }],
+    })
+    assert(direct.finishReason === 'stop' && direct.message.content === 'done', `Anthropic finish reason failed: ${JSON.stringify(direct)}`)
+}
+
+async function verifyAnthropicAgentRequest() {
+    const originalFetch = globalThis.fetch
+    const originalApiKey = config.anthropicApiKey
+    const captured: { url?: string; body?: Record<string, unknown> } = {}
+    globalThis.fetch = async (input, init) => {
+        captured.url = String(input)
+        captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response(JSON.stringify({
+            stop_reason: 'end_turn',
+            content: [{ type: 'text', text: 'mock answer' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    try {
+        config.anthropicApiKey = 'test-anthropic-key'
+        const result = await anthropicAgentProvider.runTurn({
+            model: 'claude-test',
+            messages: [{ role: 'user', content: 'mock request' }],
+            tools: [calculatorTool.definition],
+        }, new AbortController().signal)
+        assert(result.message.content === 'mock answer', `Anthropic request result failed: ${JSON.stringify(result)}`)
+        assert(captured.url?.endsWith('/v1/messages'), `Anthropic endpoint failed: ${captured.url}`)
+        assert(captured.body?.model === 'claude-test' && captured.body?.stream === false, `Anthropic request body failed: ${JSON.stringify(captured.body)}`)
+        assert(Array.isArray(captured.body?.tools) && captured.body.tools.length === 1, `Anthropic request tools failed: ${JSON.stringify(captured.body)}`)
+    } finally {
+        config.anthropicApiKey = originalApiKey
+        globalThis.fetch = originalFetch
+    }
+}
+
 async function verifyAgentEventContract() {
     const output = new PassThrough()
     let body = ''
@@ -721,13 +880,17 @@ async function main() {
     await verifyOllamaAgentProtocol()
     await verifyOllamaAgentPreCancellation()
     await verifyOllamaAgentRequest()
+    await verifyOpenAiAgentProtocol()
+    await verifyOpenAiAgentRequest()
+    await verifyAnthropicAgentProtocol()
+    await verifyAnthropicAgentRequest()
     await verifyAgentEventContract()
     await verifyToolTimeout()
     await verifyModelInvocationRecords()
     verifyAgentSessionContext()
     console.log(JSON.stringify({
         ok: true,
-        checks: ['direct-answer', 'tool-round-trip', 'debug-tool-result', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'datetime-tool', 'agent-profiles', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout', 'model-invocation-records', 'agent-session-context'],
+        checks: ['direct-answer', 'tool-round-trip', 'debug-tool-result', 'multiple-tools-sequential', 'tool-limit', 'turn-limit', 'protocol-validation', 'cancellation', 'queue-concurrency', 'queue-full-timeout', 'queue-cancel-release', 'runner-model-queue', 'tool-registry-calculator', 'datetime-tool', 'agent-profiles', 'tool-cancel-result-limit', 'ollama-agent-protocol', 'ollama-agent-cancel', 'ollama-agent-request', 'openai-agent-protocol', 'openai-agent-request', 'anthropic-agent-protocol', 'anthropic-agent-request', 'event-terminal-sequence', 'loopback-access', 'tool-timeout', 'model-invocation-records', 'agent-session-context'],
     }))
 }
 
