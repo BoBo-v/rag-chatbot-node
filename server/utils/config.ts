@@ -70,6 +70,14 @@ const useLegacyApiKeyForLogs = logQueryEnabled && !explicitLogQueryApiKey && Boo
 const agentEnabled = booleanFromEnv('AGENT_ENABLED', false)
 const agentAccessMode = agentAccessModeFromEnv()
 const agentApiKey = process.env.AGENT_API_KEY || ''
+const agentOllamaModelTimeoutMs = Math.min(
+    3_600_000,
+    Math.max(1000, numberFromEnv('AGENT_OLLAMA_MODEL_TIMEOUT_MS', 600_000)),
+)
+const agentModelTimeoutMs = Math.min(
+    3_600_000,
+    Math.max(1000, numberFromEnv('AGENT_MODEL_TIMEOUT_MS', agentOllamaModelTimeoutMs)),
+)
 
 export const config = {
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
@@ -139,7 +147,8 @@ export const config = {
     agentModelConcurrency: 1,
     agentQueueMaxSize: Math.min(50, Math.max(1, Math.floor(numberFromEnv('AGENT_QUEUE_MAX_SIZE', 5)))),
     agentQueueTimeoutMs: Math.min(300_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_QUEUE_TIMEOUT_MS', 30_000)))),
-    agentOllamaModelTimeoutMs: Math.min(3_600_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_OLLAMA_MODEL_TIMEOUT_MS', 600_000)))),
+    agentOllamaModelTimeoutMs,
+    agentModelTimeoutMs,
     agentRunTimeoutMs: Math.min(3_600_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_RUN_TIMEOUT_MS', 1_200_000)))),
     agentConnectTimeoutMs: Math.min(120_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_CONNECT_TIMEOUT_MS', 15_000)))),
     agentStreamIdleTimeoutMs: Math.min(600_000, Math.max(1000, Math.floor(numberFromEnv('AGENT_STREAM_IDLE_TIMEOUT_MS', 180_000)))),

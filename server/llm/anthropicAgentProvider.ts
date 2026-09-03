@@ -54,7 +54,7 @@ export const anthropicAgentProvider: AgentModelClient = {
                 }),
                 signal,
             },
-            config.agentOllamaModelTimeoutMs,
+            config.agentModelTimeoutMs,
             'Anthropic',
         )
 

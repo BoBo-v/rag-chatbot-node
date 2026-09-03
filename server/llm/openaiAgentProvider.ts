@@ -50,7 +50,7 @@ export const openaiAgentProvider: AgentModelClient = {
                 }),
                 signal,
             },
-            config.agentOllamaModelTimeoutMs,
+            config.agentModelTimeoutMs,
             'OpenAI',
         )
 
