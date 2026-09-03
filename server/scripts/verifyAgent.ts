@@ -585,8 +585,8 @@ async function verifyOpenAiAgentProtocol() {
     assert(messages.some(message => message.type === 'function_call'), `OpenAI function call history missing: ${JSON.stringify(messages)}`)
     assert(messages.some(message => message.type === 'function_call_output' && message.call_id === 'openai-call-1'), `OpenAI function output history missing: ${JSON.stringify(messages)}`)
 
-    const tool = toOpenAiTool(calculatorTool.definition) as { type?: string; strict?: boolean; parameters?: unknown }
-    assert(tool.type === 'function' && tool.strict === true && tool.parameters, `OpenAI tool schema failed: ${JSON.stringify(tool)}`)
+    const tool = toOpenAiTool(calculatorTool.definition) as { type?: string; parameters?: unknown }
+    assert(tool.type === 'function' && tool.parameters, `OpenAI tool schema failed: ${JSON.stringify(tool)}`)
 
     const direct = parseOpenAiAgentResponse({
         status: 'incomplete',

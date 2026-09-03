@@ -98,7 +98,6 @@ export function toOpenAiTool(tool: AgentToolDefinition): Record<string, unknown>
         name: tool.name,
         description: tool.description,
         parameters: tool.inputSchema,
-        strict: true,
     }
 }
 
