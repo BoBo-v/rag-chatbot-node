@@ -129,6 +129,8 @@ export const config = {
     agentApiKey,
     agentAvailable: agentEnabled && (agentAccessMode === 'loopback' || Boolean(agentApiKey)),
     agentOllamaModels: listFromEnv('AGENT_OLLAMA_MODELS', ['qwen2.5:7b']),
+    agentOpenaiModels: listFromEnv('AGENT_OPENAI_MODELS', []),
+    agentAnthropicModels: listFromEnv('AGENT_ANTHROPIC_MODELS', []),
     agentOllamaThinkingEnabled: booleanFromEnv('AGENT_OLLAMA_THINKING_ENABLED', false),
     agentDefaultTimeZone: process.env.AGENT_DEFAULT_TIME_ZONE || 'UTC',
     agentMaxModelTurns: 3,

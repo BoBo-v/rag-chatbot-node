@@ -45,7 +45,7 @@ export async function agentRoutes(app: FastifyInstance) {
                 required: ['agentProfile', 'provider', 'model', 'messages'],
                 properties: {
                     agentProfile: { type: 'string', enum: [...agentProfileIds] },
-                    provider: { type: 'string', enum: ['ollama'] },
+                    provider: { type: 'string', enum: ['ollama', 'openai', 'anthropic'] },
                     agentSessionId: {
                         type: 'string',
                         minLength: 1,
