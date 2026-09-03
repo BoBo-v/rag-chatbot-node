@@ -31,7 +31,6 @@ import { isLoopbackAddress } from '../router/agent'
 import { config } from '../utils/config'
 import type {
     AgentLimits,
-    AgentMessage,
     AgentModelClient,
     AgentModelScheduler,
     AgentModelInvocationRecord,

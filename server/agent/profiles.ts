@@ -43,10 +43,3 @@ export function getAgentProfile(id: string): AgentProfile {
     if (!profile) throw new AgentError('AGENT_PROFILE_UNSUPPORTED', '不支持当前 Agent Profile。', 400)
     return profile
 }
-
-export function listAgentProfiles(): AgentProfile[] {
-    return Object.values(profiles).map(profile => ({
-        ...profile,
-        toolNames: [...profile.toolNames],
-    }))
-}

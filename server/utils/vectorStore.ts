@@ -7,9 +7,7 @@ import { qdrantVectorIndex } from '../knowledge/qdrantVectorIndex'
 import type {
     AddFileInput,
     FileDetail,
-    KnowledgeStore,
     ReindexVectorStoreResult,
-    ResetVectorStoreResult,
     SearchOptions,
     SearchResult,
     StoredChunk,
@@ -385,19 +383,6 @@ export async function reindexVectorStore(fileId?: string): Promise<ReindexVector
         chunksIndexed: rows.length,
         skipped: false,
     }
-}
-
-export const sqliteKnowledgeStore: KnowledgeStore = {
-    addFileWithChunks,
-    replaceFileWithChunks,
-    search,
-    listFiles,
-    getFileDetail,
-    getFileByContentHash,
-    deleteFile,
-    resetVectorStore,
-    reindexVectorStore,
-    getVectorStoreStatus,
 }
 
 export function closeVectorStore(): void {

@@ -4,8 +4,6 @@ export const agentEventVersion = 1 as const
 export const agentProfileIds = ['calculator-v0', 'tools-v0'] as const
 
 export type AgentProfileId = typeof agentProfileIds[number]
-export type AgentAccessMode = 'api-key' | 'loopback'
-
 export interface AgentRequestMessage {
     role: 'user' | 'assistant'
     content: string

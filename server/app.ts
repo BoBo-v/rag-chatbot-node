@@ -133,7 +133,7 @@ export function buildApp(options: { logger?: boolean } = {}) {
         reply.status(response.statusCode)
         return reply.send(response.body)
     })
-    app.setNotFoundHandler((request, reply) => {
+    app.setNotFoundHandler((_request, reply) => {
         reply.status(404)
         return reply.send({ error: '接口不存在，请检查请求路径和方法。', code: 'NOT_FOUND' })
     })
