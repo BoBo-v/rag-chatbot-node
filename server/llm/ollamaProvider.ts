@@ -20,7 +20,7 @@ export const ollamaProvider: ChatProviderClient = {
                 model: input.model || config.defaultModel,
                 messages: input.messages,
                 stream: true,
-                think: false,
+                think: config.ollamaThinkingEnabled,
             }),
         }, config.ollamaTimeoutMs)
 

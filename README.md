@@ -176,6 +176,7 @@ Stop-Process -Id <PID> -Force
 ```env
 OLLAMA_URL=http://127.0.0.1:11434
 DEFAULT_MODEL=qwen3:8b
+OLLAMA_THINKING_ENABLED=false
 PORT=3001
 BODY_LIMIT_BYTES=4194304
 
@@ -237,6 +238,7 @@ AGENT_TOOL_TIMEOUT_MS=5000
 说明：
 
 - `OLLAMA_URL` 建议用 `http://127.0.0.1:11434`，避免 Windows 下 `localhost` 的 IPv4/IPv6 差异
+- `OLLAMA_THINKING_ENABLED=true` 会为普通 `/api/chat` Ollama 请求开启思考模式；原始思考内容不会返回前端，响应耗时可能增加
 - `OLLAMA_TIMEOUT_MS=600000` 是 600 秒，本地 Ollama 普通调用最多等待 10 分钟
 - `EMBEDDING_MODEL` 建议中文知识库使用 `bge-m3`
 - `VISION_MODEL` 用于图片识别入库

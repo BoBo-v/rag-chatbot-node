@@ -82,6 +82,7 @@ const agentModelTimeoutMs = Math.min(
 export const config = {
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
     defaultModel: process.env.DEFAULT_MODEL || 'qwen3:8b',
+    ollamaThinkingEnabled: booleanFromEnv('OLLAMA_THINKING_ENABLED', false),
     port: numberFromEnv('PORT', 3001),
     bodyLimitBytes: Math.max(1024, numberFromEnv('BODY_LIMIT_BYTES', 4 * 1024 * 1024)),
     apiKey: useLegacyApiKeyForLogs ? '' : globalApiKey,
