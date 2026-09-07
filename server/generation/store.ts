@@ -77,6 +77,8 @@ export function initGenerationSchema(database: DatabaseSync): void {
             ON generation_runs(owner_id, conversation_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_generation_runs_assistant_message
             ON generation_runs(owner_id, assistant_message_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_runs_unique_assistant_message
+            ON generation_runs(owner_id, assistant_message_id);
         CREATE INDEX IF NOT EXISTS idx_generation_runs_finished
             ON generation_runs(finished_at);
         CREATE INDEX IF NOT EXISTS idx_generation_events_run_sequence
