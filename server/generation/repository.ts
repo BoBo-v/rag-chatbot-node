@@ -239,6 +239,70 @@ export class GenerationRepository {
         return this.require(runId)
     }
 
+    failActiveRuns(
+        errorCode: string,
+        errorMessage: string,
+        finishedAt = new Date().toISOString(),
+    ): { recoveredRuns: number; eventlessRuns: number } {
+        this.database.exec('BEGIN IMMEDIATE')
+        try {
+            const rows = this.database.prepare(`
+                SELECT * FROM generation_runs
+                WHERE status IN ('queued', 'running')
+                ORDER BY created_at ASC, run_id ASC
+            `).all() as unknown as GenerationRunRow[]
+
+            let recoveredRuns = 0
+            let eventlessRuns = 0
+            const eventData = serializeEventData({ errorCode })
+
+            for (const row of rows) {
+                const nextSequence = Number(row.last_sequence) + 1
+                if (nextSequence <= this.maxEventsPerRun) {
+                    this.database.prepare(`
+                        INSERT INTO generation_events (run_id, sequence, event_type, data_json, created_at)
+                        VALUES (?, ?, 'run_failed', ?, ?)
+                    `).run(row.run_id, nextSequence, eventData, finishedAt)
+                    recoveredRuns += 1
+                } else {
+                    eventlessRuns += 1
+                }
+
+                this.database.prepare(`
+                    UPDATE generation_runs
+                    SET status = 'failed',
+                        last_sequence = ?,
+                        error_code = ?,
+                        error_message = ?,
+                        finished_at = ?
+                    WHERE run_id = ? AND status IN ('queued', 'running')
+                `).run(
+                    nextSequence <= this.maxEventsPerRun ? nextSequence : row.last_sequence,
+                    errorCode,
+                    errorMessage,
+                    finishedAt,
+                    row.run_id,
+                )
+            }
+
+            this.database.exec('COMMIT')
+            return { recoveredRuns, eventlessRuns }
+        } catch (error) {
+            this.database.exec('ROLLBACK')
+            throw error
+        }
+    }
+
+    deleteExpiredTerminalRuns(before: string): number {
+        const result = this.database.prepare(`
+            DELETE FROM generation_runs
+            WHERE status IN ('completed', 'failed', 'cancelled')
+              AND finished_at IS NOT NULL
+              AND finished_at < ?
+        `).run(before)
+        return Number(result.changes)
+    }
+
     deleteTerminal(runId: string, ownerId: string): boolean {
         const result = this.database.prepare(`
             DELETE FROM generation_runs

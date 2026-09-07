@@ -21,6 +21,8 @@ import {
     stopObservability,
 } from './observability/collector'
 import { routeTemplateFromRequest, safeErrorForLog, safeRemoteAddress } from './observability/privacy'
+import { closeGenerationDb } from './generation/store'
+import { createGenerationMaintenance } from './generation/maintenance'
 
 export function buildApp(options: { logger?: boolean } = {}) {
     startObservability()
@@ -67,6 +69,10 @@ export function buildApp(options: { logger?: boolean } = {}) {
         genReqId: () => randomUUID(),
         bodyLimit: config.bodyLimitBytes,
     })
+    const generationMaintenance = createGenerationMaintenance({
+        onError: (error) => app.log.error({ err: error }, '生成任务维护失败'),
+    })
+    generationMaintenance.start()
     const logQueryAvailable = config.logQueryEnabled && Boolean(config.logQueryApiKey)
 
     app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } })
@@ -182,6 +188,8 @@ export function buildApp(options: { logger?: boolean } = {}) {
         return reply.send({ error: '未授权，请提供正确的 x-api-key 或 Authorization Bearer Token。', code: 'UNAUTHORIZED' })
     })
     app.addHook('onClose', async () => {
+        generationMaintenance.stop()
+        closeGenerationDb()
         stopObservability()
         closeVectorStore()
     })
