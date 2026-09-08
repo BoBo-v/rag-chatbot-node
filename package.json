@@ -11,6 +11,7 @@
     "verify:agent:http": "tsx server/scripts/verifyAgentHttp.ts",
     "verify:generation": "tsx server/scripts/verifyGeneration.ts",
     "verify:generation:maintenance": "tsx server/scripts/verifyGenerationMaintenance.ts",
+    "verify:generation:service": "tsx server/scripts/verifyGenerationService.ts",
     "verify:observability": "tsx server/scripts/verifyObservability.ts",
     "typecheck": "tsc --noEmit"
   },

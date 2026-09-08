@@ -21,8 +21,10 @@ import {
     stopObservability,
 } from './observability/collector'
 import { routeTemplateFromRequest, safeErrorForLog, safeRemoteAddress } from './observability/privacy'
-import { closeGenerationDb } from './generation/store'
+import { closeGenerationDb, getGenerationDb } from './generation/store'
 import { createGenerationMaintenance } from './generation/maintenance'
+import { GenerationRepository } from './generation/repository'
+import { GenerationRunService } from './generation/service'
 
 export function buildApp(options: { logger?: boolean } = {}) {
     startObservability()
@@ -72,6 +74,8 @@ export function buildApp(options: { logger?: boolean } = {}) {
     const generationMaintenance = createGenerationMaintenance({
         onError: (error) => app.log.error({ err: error }, '生成任务维护失败'),
     })
+    const generationRuns = new GenerationRunService(new GenerationRepository(getGenerationDb()))
+    app.decorate('generationRuns', generationRuns)
     generationMaintenance.start()
     const logQueryAvailable = config.logQueryEnabled && Boolean(config.logQueryApiKey)
 
@@ -188,6 +192,7 @@ export function buildApp(options: { logger?: boolean } = {}) {
         return reply.send({ error: '未授权，请提供正确的 x-api-key 或 Authorization Bearer Token。', code: 'UNAUTHORIZED' })
     })
     app.addHook('onClose', async () => {
+        generationRuns.close()
         generationMaintenance.stop()
         closeGenerationDb()
         stopObservability()
