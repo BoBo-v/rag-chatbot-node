@@ -13,6 +13,7 @@
     "verify:generation:maintenance": "tsx server/scripts/verifyGenerationMaintenance.ts",
     "verify:generation:service": "tsx server/scripts/verifyGenerationService.ts",
     "verify:chat:runs": "tsx server/scripts/verifyChatRuns.ts",
+    "verify:chat:sse": "tsx server/scripts/verifyChatRunSse.ts",
     "verify:provider:abort": "tsx server/scripts/verifyProviderAbort.ts",
     "verify:observability": "tsx server/scripts/verifyObservability.ts",
     "typecheck": "tsc --noEmit"

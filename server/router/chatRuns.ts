@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import type { FastifyInstance } from 'fastify'
 import { executeChatRun } from '../chat/runExecutor'
 import type { ChatRunRequestBody } from '../chat/types'
@@ -11,11 +12,17 @@ import {
 import { createGenerationRequestHash } from '../generation/requestHash'
 import { isGenerationError } from '../generation/errors'
 import type { GenerationRun } from '../generation/types'
+import {
+    GenerationSseQueue,
+    isTerminalGenerationEvent,
+    serializeGenerationSseEvent,
+} from '../generation/sse'
 import { getChatProvider } from '../llm'
 import { config } from '../utils/config'
 import { AppError } from '../utils/errors'
 
 const idempotencyHeaderMaxLength = 80
+const sseHeartbeatIntervalMs = 15_000
 
 export async function chatRunRoutes(app: FastifyInstance) {
     app.post('/api/chat/runs', {
@@ -103,6 +110,81 @@ export async function chatRunRoutes(app: FastifyInstance) {
         return { run: toRunResponse(requireOwnedChatRun(app, runId)) }
     })
 
+    app.get('/api/chat/runs/:runId/events', {
+        schema: {
+            tags: ['Chat'],
+            summary: '订阅并重放聊天生成事件',
+            description: '通过 Last-Event-ID 指定已收到的 sequence。连接断开只停止订阅，不取消后台生成任务。',
+            params: runParamsSchema(),
+            headers: {
+                type: 'object',
+                properties: {
+                    'last-event-id': { type: 'string', pattern: '^(0|[1-9][0-9]{0,9})$' },
+                },
+            },
+            response: {
+                400: { $ref: 'ErrorResponse#' },
+                404: { $ref: 'ErrorResponse#' },
+            },
+        },
+    }, async (request, reply) => {
+        const { runId } = request.params as { runId: string }
+        requireOwnedChatRun(app, runId)
+        const afterSequence = parseLastEventId(request.headers['last-event-id'])
+        const queue = new GenerationSseQueue()
+        let unsubscribe: () => void = () => undefined
+        let heartbeat: ReturnType<typeof setInterval> | null = null
+        let cleaned = false
+
+        const cleanup = () => {
+            if (cleaned) return
+            cleaned = true
+            unsubscribe()
+            if (heartbeat) clearInterval(heartbeat)
+            heartbeat = null
+            queue.end()
+        }
+
+        reply.hijack()
+        reply.raw.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+            'X-Request-Id': request.id,
+        })
+        reply.raw.flushHeaders()
+        reply.raw.once('close', cleanup)
+
+        unsubscribe = app.generationRuns.subscribe(runId, afterSequence, event => {
+            queue.push(serializeGenerationSseEvent(event))
+            if (isTerminalGenerationEvent(event)) queue.end()
+        })
+        heartbeat = setInterval(() => queue.push(': heartbeat\n\n'), sseHeartbeatIntervalMs)
+        heartbeat.unref?.()
+
+        const current = requireOwnedChatRun(app, runId)
+        if (isTerminal(current.status)) queue.end()
+
+        try {
+            while (!reply.raw.destroyed && !reply.raw.writableEnded) {
+                const chunk = await queue.shift()
+                if (chunk === null) break
+                if (!reply.raw.write(chunk)) {
+                    await Promise.race([
+                        once(reply.raw, 'drain'),
+                        once(reply.raw, 'close'),
+                    ])
+                }
+            }
+        } finally {
+            cleanup()
+            reply.raw.removeListener('close', cleanup)
+            if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end()
+        }
+        return
+    })
+
     app.delete('/api/chat/runs/:runId', {
         schema: {
             tags: ['Chat'],
@@ -148,6 +230,15 @@ function asAppError(error: unknown): Error {
 
 function headerValue(value: string | string[] | undefined): string {
     return (Array.isArray(value) ? value[0] : value)?.trim() ?? ''
+}
+
+function parseLastEventId(value: string | string[] | undefined): number {
+    const raw = headerValue(value)
+    if (!raw) return 0
+    if (!/^(0|[1-9][0-9]{0,9})$/.test(raw)) {
+        throw new AppError(400, 'LAST_EVENT_ID_INVALID', 'Last-Event-ID 必须是非负整数。')
+    }
+    return Number(raw)
 }
 
 function isTerminal(status: GenerationRun['status']): boolean {
