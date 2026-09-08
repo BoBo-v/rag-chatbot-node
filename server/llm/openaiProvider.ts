@@ -12,7 +12,7 @@ export const openaiProvider: ChatProviderClient = {
         }
     },
 
-    async streamChat(input: ChatStreamInput): Promise<ReadableStream<Uint8Array>> {
+    async streamChat(input: ChatStreamInput, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
         if (!config.openaiApiKey) throw new Error('OPENAI_API_KEY is not configured')
 
         const response = await fetchWithTimeout(openAiResponsesUrl(config.openaiBaseUrl), {
@@ -29,7 +29,7 @@ export const openaiProvider: ChatProviderClient = {
                 })),
                 stream: true,
             }),
-        }, config.ollamaTimeoutMs)
+        }, config.ollamaTimeoutMs, signal)
 
         if (!response.ok || !response.body) {
             const errText = await response.text()

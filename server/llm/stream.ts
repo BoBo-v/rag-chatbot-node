@@ -154,14 +154,77 @@ class RagCitationFilter {
     }
 }
 
-export function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), timeoutMs)
+export async function fetchWithTimeout(
+    url: string,
+    init: RequestInit,
+    timeoutMs: number,
+    callerSignal?: AbortSignal,
+): Promise<Response> {
+    const timeoutController = new AbortController()
+    const timeout = setTimeout(() => {
+        timeoutController.abort(new DOMException('Model request timed out.', 'TimeoutError'))
+    }, timeoutMs)
 
-    return fetch(url, {
-        ...init,
-        signal: controller.signal,
-    }).finally(() => clearTimeout(timeout))
+    const signals = [init.signal, callerSignal, timeoutController.signal]
+        .filter((signal): signal is AbortSignal => Boolean(signal))
+    const signal = signals.length === 1 ? signals[0] : AbortSignal.any(signals)
+
+    try {
+        signal.throwIfAborted()
+        const response = await fetch(url, { ...init, signal })
+        if (!response.body) {
+            clearTimeout(timeout)
+            return response
+        }
+
+        const body = withStreamCleanup(response.body, () => clearTimeout(timeout))
+        return new Response(body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+        })
+    } catch (error) {
+        clearTimeout(timeout)
+        throw error
+    }
+}
+
+function withStreamCleanup(
+    stream: ReadableStream<Uint8Array>,
+    cleanup: () => void,
+): ReadableStream<Uint8Array> {
+    const reader = stream.getReader()
+    let finished = false
+    const finish = () => {
+        if (finished) return
+        finished = true
+        cleanup()
+        reader.releaseLock()
+    }
+
+    return new ReadableStream({
+        async pull(controller) {
+            try {
+                const { value, done } = await reader.read()
+                if (done) {
+                    finish()
+                    controller.close()
+                    return
+                }
+                controller.enqueue(value)
+            } catch (error) {
+                finish()
+                controller.error(error)
+            }
+        },
+        async cancel(reason) {
+            try {
+                await reader.cancel(reason)
+            } finally {
+                finish()
+            }
+        },
+    })
 }
 
 export interface SseJsonStreamHandlers {

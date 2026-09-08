@@ -12,6 +12,7 @@
     "verify:generation": "tsx server/scripts/verifyGeneration.ts",
     "verify:generation:maintenance": "tsx server/scripts/verifyGenerationMaintenance.ts",
     "verify:generation:service": "tsx server/scripts/verifyGenerationService.ts",
+    "verify:provider:abort": "tsx server/scripts/verifyProviderAbort.ts",
     "verify:observability": "tsx server/scripts/verifyObservability.ts",
     "typecheck": "tsc --noEmit"
   },

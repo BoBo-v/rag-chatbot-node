@@ -12,7 +12,7 @@ export const ollamaProvider: ChatProviderClient = {
         }
     },
 
-    async streamChat(input: ChatStreamInput): Promise<ReadableStream<Uint8Array>> {
+    async streamChat(input: ChatStreamInput, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
         const response = await fetchWithTimeout(`${config.ollamaUrl}/api/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -22,7 +22,7 @@ export const ollamaProvider: ChatProviderClient = {
                 stream: true,
                 think: config.ollamaThinkingEnabled,
             }),
-        }, config.ollamaTimeoutMs)
+        }, config.ollamaTimeoutMs, signal)
 
         if (!response.ok || !response.body) {
             const errText = await response.text()

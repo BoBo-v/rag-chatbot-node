@@ -19,7 +19,7 @@ export interface ChatProviderInfo {
 
 export interface ChatProviderClient {
     info(): ChatProviderInfo
-    streamChat(input: ChatStreamInput): Promise<ReadableStream<Uint8Array>>
+    streamChat(input: ChatStreamInput, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>>
 }
 
 export interface ModelProviderCapabilities {

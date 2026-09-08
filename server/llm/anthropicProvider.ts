@@ -12,7 +12,7 @@ export const anthropicProvider: ChatProviderClient = {
         }
     },
 
-    async streamChat(input: ChatStreamInput): Promise<ReadableStream<Uint8Array>> {
+    async streamChat(input: ChatStreamInput, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
         if (!config.anthropicApiKey) throw new Error('ANTHROPIC_API_KEY is not configured')
 
         const { system, messages } = splitSystemMessages(input.messages)
@@ -30,7 +30,7 @@ export const anthropicProvider: ChatProviderClient = {
                 messages,
                 stream: true,
             }),
-        }, config.ollamaTimeoutMs)
+        }, config.ollamaTimeoutMs, signal)
 
         if (!response.ok || !response.body) {
             const errText = await response.text()
