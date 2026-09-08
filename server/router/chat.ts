@@ -1,8 +1,7 @@
 ﻿import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { config } from '../utils/config'
-import { getChatProvider, listChatProviders, type ChatProviderId } from '../llm'
-import { AppError } from '../utils/errors'
+import { getChatProvider, listChatProviders } from '../llm'
 import { estimateTokens } from '../utils/tokenEstimator'
 import { computeCost, parsePricingFromEnv } from '../utils/pricing'
 import { hideRagCitationsInUnifiedStream } from '../llm/stream'
@@ -14,35 +13,12 @@ import {
     ragModeLabel,
     ragPromptVersion,
     toSearchResultResponse,
-    type RagMode,
 } from '../chat/rag'
+import type { ChatRequestBody } from '../chat/types'
+import { chatRequestBodySchema, validateChatBody } from '../chat/validation'
+import { classifyChatProviderError, isChatProviderTimeout } from '../chat/errors'
 
 const envPricingTable = parsePricingFromEnv(process.env.PRICING_TABLE || '')
-const chatMessageMaxCount = 50
-const chatMessageContentMaxLength = 20000
-const modelNameMaxLength = 120
-const compareIdMaxLength = 80
-const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
-const safeTokenPattern = '^[A-Za-z0-9_-]+$'
-const modelNamePattern = '^[A-Za-z0-9._:/@+-]+$'
-const chatRoleValues = ['system', 'user', 'assistant']
-
-interface ChatMessage {
-    role: string
-    content: string
-}
-
-interface ChatRequestBody {
-    messages: ChatMessage[]
-    model?: string
-    provider?: ChatProviderId
-    rag?: RagMode | 'true' | 'false'
-    fileId?: string
-    topK?: number
-    minScore?: number
-    compareId?: string
-}
-
 export async function chatRoutes(app: FastifyInstance) {
     app.post('/api/chat/context', {
         schema: {
@@ -295,7 +271,7 @@ export async function chatRoutes(app: FastifyInstance) {
             const providerError = classifyChatProviderError(err)
             const endedAt = new Date().toISOString()
             const latencyMs = Math.round(performance.now() - requestStart)
-            const isTimeout = err instanceof Error && err.name === 'AbortError'
+            const isTimeout = isChatProviderTimeout(err)
 
             recordAiRequest({
                 id: aiInvocationId,
@@ -421,7 +397,6 @@ export async function chatRoutes(app: FastifyInstance) {
         }
     })
 }
-
 function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -430,112 +405,4 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
         ...init,
         signal: controller.signal,
     }).finally(() => clearTimeout(timeout))
-}
-
-function chatRequestBodySchema() {
-    return {
-        type: 'object',
-        required: ['messages'],
-        properties: {
-            provider: {
-                type: 'string',
-                enum: ['ollama', 'openai', 'anthropic'],
-                default: 'ollama',
-                description: '模型厂商。默认 ollama，可选 openai 或 anthropic。',
-            },
-            model: {
-                type: 'string',
-                minLength: 1,
-                maxLength: modelNameMaxLength,
-                pattern: modelNamePattern,
-                default: config.defaultModel,
-                description: '可选，模型名称。不传时使用所选厂商默认模型。',
-            },
-            rag: {
-                anyOf: [
-                    { type: 'boolean' },
-                    { type: 'string', enum: ['auto', 'true', 'false'] },
-                ],
-                default: 'auto',
-                description: 'RAG 模式。true 强制检索知识库，false 直接调用模型，auto 由后端根据问题和检索命中自动决定。',
-            },
-            fileId: { type: 'string', pattern: uuidPattern, description: '可选，限定只检索某个已上传文件。' },
-            topK: { type: 'number', minimum: 1, maximum: 20, default: config.ragTopK, description: '可选，覆盖本次 RAG 返回数量。' },
-            minScore: { type: 'number', minimum: 0, maximum: 1, default: config.ragMinScore, description: '可选，覆盖本次 RAG 最低综合分数。' },
-            compareId: {
-                type: 'string',
-                minLength: 1,
-                maxLength: compareIdMaxLength,
-                pattern: safeTokenPattern,
-                description: '可选，一次用户对比的分组 ID，多个模型请求可共享同一 compareId 用于统计汇总。',
-            },
-            messages: {
-                type: 'array',
-                minItems: 1,
-                maxItems: chatMessageMaxCount,
-                description: '对话消息列表',
-                items: {
-                    type: 'object',
-                    required: ['role', 'content'],
-                    additionalProperties: false,
-                    properties: {
-                        role: { type: 'string', enum: chatRoleValues, description: '消息角色，例如 user、assistant、system' },
-                        content: {
-                            type: 'string',
-                            minLength: 1,
-                            maxLength: chatMessageContentMaxLength,
-                            description: '消息内容',
-                        },
-                    },
-                },
-            },
-        },
-    }
-}
-
-function validateChatBody(body: ChatRequestBody): string | null {
-    if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
-        return 'messages 不能为空'
-    }
-
-    if (body.messages.length > chatMessageMaxCount) {
-        return `messages 最多支持 ${chatMessageMaxCount} 条`
-    }
-
-    for (const [index, message] of body.messages.entries()) {
-        if (!chatRoleValues.includes(message?.role)) {
-            return `messages[${index}].role 必须是 system、user 或 assistant`
-        }
-        if (typeof message.content !== 'string' || message.content.trim().length === 0) {
-            return `messages[${index}].content 不能为空`
-        }
-        if (message.content.length > chatMessageContentMaxLength) {
-            return `messages[${index}].content 不能超过 ${chatMessageContentMaxLength} 个字符`
-        }
-    }
-
-    const lastMessage = body.messages[body.messages.length - 1]
-    if (!lastMessage?.content || typeof lastMessage.content !== 'string' || lastMessage.content.trim().length === 0) {
-        return '最后一条消息 content 不能为空'
-    }
-
-    return null
-}
-
-function classifyChatProviderError(err: unknown): AppError {
-    const message = err instanceof Error ? err.message : ''
-
-    if (message.includes('OPENAI_API_KEY is not configured')) {
-        return new AppError(400, 'OPENAI_NOT_CONFIGURED', 'OpenAI 未配置，请先在后端 .env 设置 OPENAI_API_KEY。')
-    }
-
-    if (message.includes('ANTHROPIC_API_KEY is not configured')) {
-        return new AppError(400, 'ANTHROPIC_NOT_CONFIGURED', 'Claude 未配置，请先在后端 .env 设置 ANTHROPIC_API_KEY。')
-    }
-
-    if (message.includes('fetch failed') || message.includes('aborted') || message.includes('Failed to fetch')) {
-        return new AppError(502, 'MODEL_PROVIDER_UNAVAILABLE', '模型厂商服务调用失败，请检查厂商配置、网络连接或本地 Ollama 状态。')
-    }
-
-    return new AppError(502, 'MODEL_PROVIDER_FAILED', '模型厂商返回错误，请查看后端日志中的上游错误详情。')
 }

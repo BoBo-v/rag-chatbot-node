@@ -5,6 +5,7 @@ import multipart from '@fastify/multipart'
 import swagger from '@fastify/swagger'
 import swaggerUi from '@fastify/swagger-ui'
 import { chatRoutes } from './router/chat'
+import { chatRunRoutes } from './router/chatRuns'
 import { systemRoutes } from './router/system'
 import { uploadRoutes } from './router/upload'
 import { metricsRoutes } from './router/metrics'
@@ -192,8 +193,8 @@ export function buildApp(options: { logger?: boolean } = {}) {
         return reply.send({ error: '未授权，请提供正确的 x-api-key 或 Authorization Bearer Token。', code: 'UNAUTHORIZED' })
     })
     app.addHook('onClose', async () => {
-        generationRuns.close()
         generationMaintenance.stop()
+        await generationRuns.close()
         closeGenerationDb()
         stopObservability()
         closeVectorStore()
@@ -201,6 +202,7 @@ export function buildApp(options: { logger?: boolean } = {}) {
     app.register(systemRoutes)
     app.register(uploadRoutes)
     app.register(chatRoutes)
+    app.register(chatRunRoutes)
     if (config.agentAvailable) {
         app.register(agentRoutes)
     } else if (config.agentEnabled) {

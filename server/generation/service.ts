@@ -10,6 +10,18 @@ import type {
 
 export type GenerationEventListener = (event: GenerationEvent) => void
 
+export type GenerationExecutionAbortCode = 'CLIENT_ABORTED' | 'SERVER_SHUTDOWN'
+
+export class GenerationExecutionAbort extends Error {
+    readonly code: GenerationExecutionAbortCode
+
+    constructor(code: GenerationExecutionAbortCode, message: string) {
+        super(message)
+        this.name = 'GenerationExecutionAbort'
+        this.code = code
+    }
+}
+
 interface GenerationSubscription {
     readonly runId: string
     readonly listener: GenerationEventListener
@@ -20,6 +32,10 @@ interface GenerationSubscription {
 
 export class GenerationRunService {
     private readonly subscriptions = new Map<string, Set<GenerationSubscription>>()
+    private readonly executions = new Map<string, {
+        controller: AbortController
+        promise: Promise<void>
+    }>()
 
     constructor(private readonly repository: GenerationRepository) {}
 
@@ -43,6 +59,38 @@ export class GenerationRunService {
 
     requestCancellation(runId: string): GenerationRun {
         return this.repository.requestCancellation(runId)
+    }
+
+    runInBackground(runId: string, task: (signal: AbortSignal) => Promise<void>): void {
+        if (this.executions.has(runId)) return
+
+        const controller = new AbortController()
+        const promise = task(controller.signal).finally(() => {
+            this.executions.delete(runId)
+        })
+        this.executions.set(runId, { controller, promise })
+        void promise.catch(() => undefined)
+    }
+
+    cancel(runId: string): GenerationRun {
+        const run = this.requestCancellation(runId)
+        const execution = this.executions.get(runId)
+        if (execution) {
+            execution.controller.abort(new GenerationExecutionAbort(
+                'CLIENT_ABORTED',
+                '生成任务已由客户端取消。',
+            ))
+            return run
+        }
+
+        const result = this.appendEvent(runId, {
+            eventType: 'run_cancelled',
+            data: { code: 'CLIENT_ABORTED', message: '生成任务已由客户端取消。' },
+            transitionTo: 'cancelled',
+            errorCode: 'CLIENT_ABORTED',
+            errorMessage: '生成任务已由客户端取消。',
+        })
+        return result.run
     }
 
     subscribe(
@@ -73,7 +121,14 @@ export class GenerationRunService {
         return () => this.unsubscribe(runId, subscription)
     }
 
-    close(): void {
+    async close(): Promise<void> {
+        for (const execution of this.executions.values()) {
+            execution.controller.abort(new GenerationExecutionAbort(
+                'SERVER_SHUTDOWN',
+                '服务正在关闭，生成任务已终止。',
+            ))
+        }
+        await Promise.allSettled([...this.executions.values()].map(execution => execution.promise))
         this.subscriptions.clear()
     }
 
