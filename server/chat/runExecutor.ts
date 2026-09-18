@@ -6,6 +6,7 @@ import { hideRagCitationsInUnifiedStream } from '../llm/stream'
 import { computeCost, parsePricingFromEnv } from '../utils/pricing'
 import { estimateTokens } from '../utils/tokenEstimator'
 import { recordAiRequest, recordApplicationEvent } from '../observability/collector'
+import { safeErrorMessage } from '../observability/privacy'
 import { GenerationExecutionAbort, type GenerationRunService } from '../generation/service'
 import { buildRagContext, ragPromptVersion, toSearchResultResponse } from './rag'
 import { classifyChatProviderError, isChatProviderTimeout } from './errors'
@@ -125,6 +126,7 @@ export async function executeChatRun(input: ExecuteChatRunInput, signal: AbortSi
             errorCode: providerError.code,
             runId: input.runId,
             requestId: input.requestId,
+            upstreamError: safeErrorMessage(error),
         }
         if (cancelled) input.logger.warn(logContext)
         else input.logger.error(logContext)
@@ -137,7 +139,12 @@ export async function executeChatRun(input: ExecuteChatRunInput, signal: AbortSi
             statusCode: providerError.statusCode,
             errorCode: providerError.code,
             message: providerError.message,
-            context: { runId: input.runId, provider: input.providerId, model: input.model },
+            context: {
+                runId: input.runId,
+                provider: input.providerId,
+                model: input.model,
+                upstreamError: safeErrorMessage(error),
+            },
         })
         recordRunMetric(input, {
             aiInvocationId,

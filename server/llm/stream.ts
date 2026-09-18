@@ -1,4 +1,8 @@
+import type { Dispatcher } from 'undici'
+
 const encoder = new TextEncoder()
+
+export type ProviderRequestInit = RequestInit & { dispatcher?: Dispatcher }
 
 export function ndjsonLine(value: unknown): Uint8Array {
     return encoder.encode(`${JSON.stringify(value)}\n`)
@@ -156,7 +160,7 @@ class RagCitationFilter {
 
 export async function fetchWithTimeout(
     url: string,
-    init: RequestInit,
+    init: ProviderRequestInit,
     timeoutMs: number,
     callerSignal?: AbortSignal,
 ): Promise<Response> {
@@ -171,7 +175,7 @@ export async function fetchWithTimeout(
 
     try {
         signal.throwIfAborted()
-        const response = await fetch(url, { ...init, signal })
+        const response = await fetch(url, { ...init, signal } as RequestInit)
         if (!response.body) {
             clearTimeout(timeout)
             return response

@@ -14,7 +14,7 @@ import {
 import { splitTextToChunks } from '../utils/chunker'
 import { getEmbeddings } from '../utils/embedding'
 import { existsSync, rmSync, writeFileSync } from 'node:fs'
-import { ollamaNdjsonToUnifiedStream } from '../llm/ollamaProvider'
+import { OllamaProviderError, ollamaNdjsonToUnifiedStream } from '../llm/ollamaProvider'
 import { sseJsonToUnifiedStream } from '../llm/stream'
 import { config } from '../utils/config'
 import { buildSearchFilter, toQdrantPoint } from '../knowledge/qdrantVectorIndex'
@@ -124,6 +124,9 @@ async function verifyQdrantPayloadBuilders() {
     assert(serialized.includes('"projectId"'), `qdrant filter should include project: ${serialized}`)
     assert(serialized.includes('"ownerUserId"'), `qdrant filter should include owner: ${serialized}`)
     assert(serialized.includes('"fileId"'), `qdrant filter should include file scope: ${serialized}`)
+
+    const ollamaError = new OllamaProviderError(500, 'context length exceeded')
+    assert(ollamaError.message === 'Ollama HTTP 500: context length exceeded', 'Ollama upstream error should preserve status and detail')
 }
 
 async function verifyVectorStore() {

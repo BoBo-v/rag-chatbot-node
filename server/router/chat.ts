@@ -17,6 +17,7 @@ import {
 import type { ChatRequestBody } from '../chat/types'
 import { chatRequestBodySchema, validateChatBody } from '../chat/validation'
 import { classifyChatProviderError, isChatProviderTimeout } from '../chat/errors'
+import { safeErrorMessage } from '../observability/privacy'
 
 const envPricingTable = parsePricingFromEnv(process.env.PRICING_TABLE || '')
 export async function chatRoutes(app: FastifyInstance) {
@@ -267,7 +268,12 @@ export async function chatRoutes(app: FastifyInstance) {
             }
             return
         } catch (err) {
-            request.log.error({ err, event: 'chat.provider.failed', errorCode: 'MODEL_PROVIDER_FAILED' })
+            request.log.error({
+                err,
+                event: 'chat.provider.failed',
+                errorCode: 'MODEL_PROVIDER_FAILED',
+                upstreamError: safeErrorMessage(err),
+            })
             const providerError = classifyChatProviderError(err)
             const endedAt = new Date().toISOString()
             const latencyMs = Math.round(performance.now() - requestStart)

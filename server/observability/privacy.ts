@@ -21,6 +21,7 @@ const allowedContextKeys = new Set([
     'step',
     'provider',
     'model',
+    'upstreamError',
     'modelTurns',
     'toolCallCount',
     'finishReason',
@@ -57,8 +58,18 @@ export function safeRemoteAddress(value?: string): string | null {
 }
 
 export function safeErrorMessage(err: unknown, fallback = '系统内部错误'): string {
-    const raw = err instanceof Error ? err.message : String(err || fallback)
+    const raw = describeError(err) || fallback
     return redactSecrets(raw).slice(0, maxErrorMessageLength) || fallback
+}
+
+function describeError(err: unknown, depth = 0): string {
+    if (depth > 3 || err === null || err === undefined) return ''
+    if (!(err instanceof Error)) return String(err)
+
+    const typed = err as Error & { cause?: unknown; code?: unknown }
+    const code = typeof typed.code === 'string' ? ` [code: ${typed.code}]` : ''
+    const cause = describeError(typed.cause, depth + 1)
+    return `${err.message || err.name}${code}${cause ? ` [cause: ${cause}]` : ''}`
 }
 
 export function safeErrorForLog(err: unknown): { type: string; message: string; stack: string } {

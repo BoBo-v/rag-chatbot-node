@@ -1,4 +1,5 @@
 import { fetchWithTimeout } from '../llm/stream'
+import { isChatProviderTimeout } from '../chat/errors'
 
 function assert(condition: unknown, message: string): asserts condition {
     if (!condition) throw new Error(message)
@@ -66,9 +67,14 @@ async function main() {
         const completed = await completedResponse.arrayBuffer()
         assert(completed.byteLength === 3, 'completed response body should pass through')
 
+        const headersTimeout = new TypeError('fetch failed', {
+            cause: Object.assign(new Error('Headers Timeout Error'), { code: 'UND_ERR_HEADERS_TIMEOUT' }),
+        })
+        assert(isChatProviderTimeout(headersTimeout), 'nested Undici headers timeout should be classified as timeout')
+
         console.log(JSON.stringify({
             ok: true,
-            checks: ['pre-cancel', 'in-flight-cancel', 'stream-timeout', 'normal-completion'],
+            checks: ['pre-cancel', 'in-flight-cancel', 'stream-timeout', 'normal-completion', 'headers-timeout-classification'],
         }))
     } finally {
         globalThis.fetch = originalFetch

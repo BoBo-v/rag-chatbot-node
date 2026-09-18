@@ -1,6 +1,26 @@
 import { config } from '../utils/config'
+import { Agent } from 'undici'
 import { chatDoneLine, chatErrorLine, chatTextLine, fetchWithTimeout } from './stream'
 import type { ChatProviderClient, ChatProviderInfo, ChatStreamInput } from './types'
+
+const ollamaDispatcher = new Agent({
+    headersTimeout: config.ollamaTimeoutMs,
+    bodyTimeout: config.ollamaTimeoutMs,
+})
+
+/** Error returned by Ollama before a response stream can be created. */
+export class OllamaProviderError extends Error {
+    readonly statusCode: number
+    readonly responseBody: string
+
+    constructor(statusCode: number, responseBody: string) {
+        const detail = responseBody.trim() || 'empty response body'
+        super(`Ollama HTTP ${statusCode}: ${detail}`)
+        this.name = 'OllamaProviderError'
+        this.statusCode = statusCode
+        this.responseBody = detail
+    }
+}
 
 export const ollamaProvider: ChatProviderClient = {
     info(): ChatProviderInfo {
@@ -14,6 +34,7 @@ export const ollamaProvider: ChatProviderClient = {
 
     async streamChat(input: ChatStreamInput, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
         const response = await fetchWithTimeout(`${config.ollamaUrl}/api/chat`, {
+            dispatcher: ollamaDispatcher,
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -21,16 +42,32 @@ export const ollamaProvider: ChatProviderClient = {
                 messages: input.messages,
                 stream: true,
                 think: config.ollamaThinkingEnabled,
+                options: {
+                    num_ctx: 8192
+                }
             }),
         }, config.ollamaTimeoutMs, signal)
 
         if (!response.ok || !response.body) {
             const errText = await response.text()
-            throw new Error(errText || `Ollama chat failed: ${response.status}`)
+            throw new OllamaProviderError(response.status, extractOllamaError(errText))
         }
 
         return ollamaNdjsonToUnifiedStream(response.body)
     },
+}
+
+function extractOllamaError(body: string): string {
+    const trimmed = body.trim()
+    if (!trimmed) return ''
+
+    try {
+        const parsed = JSON.parse(trimmed) as { error?: unknown }
+        if (typeof parsed.error === 'string' && parsed.error.trim()) return parsed.error.trim().slice(0, 2_000)
+    } catch {
+        // Ollama may return plain text for proxy or service errors.
+    }
+    return trimmed.slice(0, 2_000)
 }
 
 export function ollamaNdjsonToUnifiedStream(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
