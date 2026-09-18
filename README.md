@@ -1,809 +1,270 @@
-# Node Fastify 本地 RAG 后端
+# Node Fastify 本地 AI / RAG 后端
 
-这是一个基于 Fastify 的本地 AI / RAG 后端，用来做知识库上传、文本切块、向量化、混合检索、图片识别入库和多模型对话代理。
-
-当前项目的核心目标是：前端只需要调用统一接口，后端负责把文档、PDF、图片等资料整理成可检索知识库，再根据用户问题自动决定是否注入 RAG 上下文。
+基于 TypeScript、Fastify 5、SQLite 和 Ollama 的知识库与多模型对话后端，面向个人及小团队的本地 AI 应用开发。本仓库包含后端和内置统计面板，不包含完整聊天前端。
 
 ## 核心能力
 
-- 知识库上传：支持 `txt`、`md`、`pdf`、`png`、`jpg`、`jpeg`、`webp`
-- 图片入库：图片先由本地视觉模型识别/翻译成 Markdown，再进入 RAG 流程
-- 向量化：通过 Ollama embedding 模型生成向量
-- 检索：SQLite 存储 + FTS5 关键词索引 + 向量相似度混合排序
-- 对话：统一代理 Ollama、OpenAI、Anthropic Claude
-- RAG 自动模式：后端可根据问题和检索命中自动决定是否注入知识库
-- 调用统计：记录模型请求、耗时、错误、估算 token 和成本
-- 上传进度：通过 SSE 返回上传、解析、embedding、入库阶段状态
+- 知识库：TXT、Markdown、PDF 和 PNG/JPG/JPEG/WebP 图片入库，支持内容去重。
+- 图片解析：通过 Ollama 视觉模型生成 Markdown，再切块、向量化。
+- 混合检索：Ollama Embedding、SQLite FTS5 关键词索引及向量相似度排序，可选 Qdrant 向量后端。
+- RAG 对话：自动、开启、关闭三种模式，可预览命中片段、分数和注入提示词。
+- 多模型代理：Ollama、OpenAI 兼容接口、Anthropic，统一流式聊天输出。
+- 可恢复聊天：后台生成、幂等创建、答案快照、SSE 事件重放和主动取消。
+- 可选 Agent：受控工具调用、模型白名单、独立鉴权、队列和超时控制。
+- 可观测性：独立数据库记录请求、模型调用、RAG 命中、耗时和错误，提供 Dashboard。
 
-## 工程改进亮点
+## 快速启动
 
-- 基于 28 条 RAG 检索测试用例对 `minScore` 做参数评估，覆盖精确问题、模糊问题、跨文件问题、无关问题和容易被大文件吸走的问题；将默认阈值从 `0.35` 调整为 `0.55`，在保持相关问题召回的同时，消除了本轮天气、闲聊、实时新闻等无关问题的误召回。
+需要支持 `node:sqlite` 的 Node.js，建议 Node.js 22.13+ 或更新的 LTS。部分版本输出 SQLite experimental warning，不代表服务启动失败。
 
-## 技术栈
-
-- Node.js
-- TypeScript
-- Fastify
-- SQLite / `node:sqlite`
-- Ollama
-- pdf-parse
-- Fastify Swagger / Swagger UI
-
-注意：`node:sqlite` 在当前 Node 版本中仍可能打印 experimental warning，这是 Node 自身提示，不代表项目启动失败。
-
-## 目录结构
-
-```text
-server/
-  app.ts                 Fastify 应用注册、鉴权、CORS、Swagger、全局日志
-  index.ts               服务启动入口
-  dashboard.html         内置运行统计面板
-  router/
-    upload.ts            知识库上传、文件管理、向量库状态、搜索
-    chat.ts              聊天、RAG 上下文预览、厂商/模型查询
-    metrics.ts           调用指标接口和 dashboard 页面
-    logs.ts              结构化日志查询和 requestId 详情
-    system.ts            健康检查
-  observability/
-    collector.ts         有界队列、批量写入、重试和每日清理
-    store.ts             独立观测数据库和旧指标迁移
-    queries.ts           日志筛选、游标分页和聚合查询
-    privacy.ts           路由、IP、错误和上下文脱敏
-  llm/
-    ollamaProvider.ts    Ollama 对话流
-    openaiProvider.ts    OpenAI 兼容接口
-    anthropicProvider.ts Anthropic Claude 兼容接口
-    stream.ts            统一流式输出格式
-  utils/
-    config.ts            环境变量配置
-    vision.ts            图片识别调用 Ollama VL 模型
-    embedding.ts         embedding 调用和重试
-    chunker.ts           文本切块
-    vectorStore.ts       SQLite 向量库、FTS、检索
-    metricsStore.ts      AI 调用指标兼容查询
-    errors.ts            错误分类
-```
-
-## 环境要求
-
-- Node.js 22 或更高版本，需支持 `node:sqlite`
-- Ollama 已启动
-- 本地模型建议：
-  - 对话模型：`qwen3:8b`
-  - 视觉模型：`qwen3-vl:2b`
-  - embedding 模型：中文知识库建议 `bge-m3`
-
-安装模型示例：
-
-```powershell
-ollama pull qwen3:8b
-ollama pull qwen3-vl:2b
-ollama pull bge-m3
-```
-
-查看本地模型：
-
-```powershell
-ollama list
-```
-
-如果 `ollama list` 异常，也可以直接查 API：
-
-```powershell
-curl http://127.0.0.1:11434/api/tags
-```
-
-## 安装和启动
+安装依赖并创建配置；已有 `.env` 时保留原文件：
 
 ```powershell
 npm install
-copy .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+启动 Ollama，拉取与配置一致的模型：
+
+```powershell
+ollama pull qwen3:8b
+ollama pull nomic-embed-text
+# 图片入库需要视觉模型
+ollama pull qwen3-vl:2b
 npm run dev:server
 ```
 
-默认后端地址：
+模板使用 `EMBEDDING_MODEL=nomic-embed-text`。中文知识库可改用 `bge-m3`，需要先拉取该模型并同步修改配置。
+
+| 入口 | 地址 |
+| --- | --- |
+| 健康检查 | `http://localhost:3001/api/health` |
+| Swagger UI | `http://localhost:3001/docs` |
+| 统计面板 | `http://localhost:3001/api/metrics/dashboard`，需启用日志查询 |
+
+端口默认 3001，以启动日志输出为准。仅使用已配置的云端模型并关闭 RAG 时，不依赖本地对话模型；知识库 Embedding 与图片解析仍依赖 Ollama。
+
+## 配置
+
+完整说明见 [`.env.example`](.env.example)，读取逻辑见 [config.ts](server/utils/config.ts)。修改配置后重启服务。
+
+下表为当前模板值：
+
+| 配置 | 模板值 / 用途 |
+| --- | --- |
+| `PORT` | `3001` |
+| `OLLAMA_URL` | `http://localhost:11434` |
+| `DEFAULT_MODEL` | `qwen3:8b` |
+| `EMBEDDING_MODEL` | `nomic-embed-text` |
+| `VISION_MODEL` | `qwen3-vl:2b` |
+| `OLLAMA_THINKING_ENABLED` | `false` |
+| `RAG_MODE` | `auto` |
+| `RAG_SHOW_CITATIONS` | `true` |
+| `RAG_TOP_K` / `RAG_MIN_SCORE` | `5` / `0.6` |
+| `RAG_VECTOR_WEIGHT` / `RAG_KEYWORD_WEIGHT` | `0.8` / `0.2` |
+| `CHUNK_MAX_LEN` / `CHUNK_OVERLAP` | `700` / `100`，单位为字符 |
+| `EMBEDDING_BATCH_SIZE` | `16` |
+| `VECTOR_BACKEND` | `sqlite`，也支持 `qdrant` |
+| `BODY_LIMIT_BYTES` | `4194304`，JSON 请求体上限 |
+| `OLLAMA_TIMEOUT_MS` | `600000` |
+
+代码未配置时的回退值与模板并非完全一致：`RAG_MIN_SCORE` 回退为 `0.55`，`RAG_SHOW_CITATIONS` 回退为 `false`。历史评测中的参数也不代表当前运行值。
+
+云端模型配置使用 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_DEFAULT_MODEL` 或对应 `ANTHROPIC_*` 项。客户端通过 `provider` 选择 `ollama`、`openai` 或 `anthropic`。
+
+### 鉴权与功能开关
+
+- 业务接口：设置 `API_KEY` 后，通过 `x-api-key` 或 `Authorization: Bearer ...` 访问受保护接口。
+- 日志和 Dashboard：设置 `LOG_QUERY_ENABLED=true` 和 `LOG_QUERY_API_KEY`；数据请求通过上述密钥头传日志专用密钥。未满足启用条件时相关路由返回 404。旧 `API_KEY` 的迁移回退仍保留，建议显式配置专用密钥。
+- Agent：设置 `AGENT_ENABLED=true`、`AGENT_ACCESS_MODE=api-key`、`AGENT_API_KEY`，请求使用 `x-agent-api-key`。
+- CORS：`CORS_ORIGIN` 使用逗号分隔允许访问的前端地址。
+
+Agent 的 loopback 模式只检查后端直接收到的本机连接，不能将前端代理转发视为可靠的用户身份校验。
+
+## 知识库与 RAG
 
 ```text
-http://127.0.0.1:3001
+文件上传 -> 文本提取 / 图片识别 -> 切块 -> Embedding -> 保存元数据及索引
+用户问题 -> 向量与关键词检索 -> 混合排序 -> RAG 门控 -> 注入材料 -> 模型回答
 ```
 
-健康检查：
+### 上传与检索
 
-```text
-GET /api/health
-```
-
-Swagger UI：
-
-```text
-http://127.0.0.1:3001/docs
-```
-
-运行统计面板：
-
-```text
-http://127.0.0.1:3001/api/metrics/dashboard
-```
-
-需要先设置 `LOG_QUERY_ENABLED=true` 并提供有效的日志查询密钥。优先使用 `LOG_QUERY_API_KEY`；迁移期间可暂时回退到旧 `API_KEY`。
-
-## 常用脚本
+上传使用 multipart，单文件限制为 10 MiB。解析文本和切块数量另受 `MAX_EXTRACTED_TEXT_CHARS`、`MAX_FILE_CHUNKS` 限制。
 
 ```powershell
-npm run dev:server
-npm run typecheck
-npm run verify
-npm run verify:http
-npm run verify:observability
-npm run verify:agent
-npm run verify:agent:http
+curl.exe -F "file=@test.txt" http://localhost:3001/api/upload
+curl.exe --get --data-urlencode "q=根据知识库说明项目架构" http://localhost:3001/api/search
 ```
 
-- `dev:server`：启动后端开发服务，使用 `tsx watch`
-- `typecheck`：TypeScript 静态检查
-- `verify`：本地逻辑验证，包括 chunker、向量库、去重、混合检索、中文 FTS 等
-- `verify:http`：HTTP 接口级验证
-- `verify:observability`：独立观测库、旧指标迁移、游标分页和脱敏验证
-- `verify:agent`：AgentRunner、模型队列、工具校验、超时和 Ollama 协议验证
-- `verify:agent:http`：Agent 专用鉴权、NDJSON、取消、模型超时和日志关联验证
+启用鉴权时添加 `-H "x-api-key:你的密钥"`。图片源文件保存在 `UPLOAD_DIR`，不能假定其他格式也保留原始上传件。
 
-如果 `npm run verify` 报 SQLite 文件 `EBUSY`，通常是后端进程正在占用 `server/data/vector-store.sqlite`。先停止后端再跑验证。
+上传进度接入顺序：
 
-## 端口占用处理
+1. 前端生成 `progressId`。
+2. 订阅 `GET /api/upload/progress/:id` 的 SSE。
+3. 上传到 `POST /api/upload?progressId=...`。
+4. 根据 receiving、parsing、chunking、embedding、storing、completed 或 failed 阶段更新状态。
 
-如果启动时报：
+默认重复内容会复用已有记录。只有需要重新解析时才使用 `overwrite=true`，避免重复执行视觉识别和 Embedding。
 
-```text
-EADDRINUSE: address already in use ::1:3001
-```
+### 聊天示例
 
-说明 3001 已经被旧进程占用。PowerShell 中执行：
-
-```powershell
-netstat -ano | Select-String ':3001'
-```
-
-找到最后一列 PID，然后停止：
-
-```powershell
-Stop-Process -Id <PID> -Force
-```
-
-## 环境变量
-
-`.env.example` 提供了完整配置模板。常用配置如下：
-
-```env
-OLLAMA_URL=http://127.0.0.1:11434
-DEFAULT_MODEL=qwen3:8b
-OLLAMA_THINKING_ENABLED=false
-PORT=3001
-BODY_LIMIT_BYTES=4194304
-
-API_KEY=
-CORS_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
-
-EMBEDDING_MODEL=bge-m3
-VISION_MODEL=qwen3-vl:2b
-OLLAMA_TIMEOUT_MS=600000
-UPLOAD_DIR=server/data/uploads
-VECTOR_STORE_PATH=server/data/vector-store.sqlite
-OBSERVABILITY_DB_PATH=server/data/observability.sqlite
-
-RAG_MODE=auto
-RAG_TOP_K=5
-RAG_MIN_SCORE=0.55
-RAG_VECTOR_WEIGHT=0.8
-RAG_KEYWORD_WEIGHT=0.2
-
-CHUNK_MAX_LEN=700
-CHUNK_OVERLAP=100
-MAX_EXTRACTED_TEXT_CHARS=2000000
-MAX_FILE_CHUNKS=2000
-EMBEDDING_BATCH_SIZE=16
-RAG_VECTOR_CANDIDATE_LIMIT=1000
-
-VECTOR_BACKEND=sqlite
-QDRANT_URL=http://127.0.0.1:6333
-QDRANT_API_KEY=
-QDRANT_COLLECTION=knowledge_chunks
-QDRANT_DISTANCE=Cosine
-DEFAULT_TENANT_ID=default
-DEFAULT_PROJECT_ID=default
-DEFAULT_OWNER_USER_ID=local
-
-LOG_LEVEL=info
-LOG_QUERY_ENABLED=false
-LOG_QUERY_API_KEY=
-LOG_QUESTION_PREVIEW=false
-LOG_REMOTE_ADDRESS=none
-LOG_QUEUE_MAX_SIZE=5000
-LOG_FLUSH_INTERVAL_MS=5000
-LOG_WRITE_RETRY_COUNT=3
-LOG_HTTP_RETENTION_DAYS=30
-LOG_AI_RETENTION_DAYS=90
-LOG_EVENT_RETENTION_DAYS=90
-
-AGENT_ENABLED=false
-AGENT_ACCESS_MODE=api-key
-AGENT_API_KEY=
-AGENT_OLLAMA_MODELS=qwen2.5:7b
-AGENT_QUEUE_MAX_SIZE=5
-AGENT_QUEUE_TIMEOUT_MS=30000
-AGENT_OLLAMA_MODEL_TIMEOUT_MS=600000
-AGENT_RUN_TIMEOUT_MS=1200000
-AGENT_TOOL_TIMEOUT_MS=5000
-```
-
-说明：
-
-- `OLLAMA_URL` 建议用 `http://127.0.0.1:11434`，避免 Windows 下 `localhost` 的 IPv4/IPv6 差异
-- `OLLAMA_THINKING_ENABLED=true` 会为普通 `/api/chat` Ollama 请求开启思考模式；原始思考内容不会返回前端，响应耗时可能增加
-- `OLLAMA_TIMEOUT_MS=600000` 是 600 秒，本地 Ollama 普通调用最多等待 10 分钟
-- `EMBEDDING_MODEL` 建议中文知识库使用 `bge-m3`
-- `VISION_MODEL` 用于图片识别入库
-- `LOG_QUERY_ENABLED=true` 且存在有效日志查询密钥时才会注册日志查询接口和 Dashboard
-- `LOG_QUERY_API_KEY` 只保护日志查询；`API_KEY` 非空时会保护所有非公开业务接口
-- 兼容迁移：开启日志但尚未设置 `LOG_QUERY_API_KEY` 时，旧 `API_KEY` 暂时只作为日志密钥使用；建议尽快将其移动到 `LOG_QUERY_API_KEY` 并清空 `API_KEY`
-- HTTP 日志只保存路由模板，不保存带查询参数的完整 URL
-- 问题预览和访问 IP 默认不记录；错误堆栈只输出到经过脱敏的 Pino 日志
-- Agent 默认关闭；启用后使用独立 `AGENT_API_KEY`，不会让普通聊天和知识库接口同时要求该 Key
-- 当前安装的 `qwen3:8b` 没有声明 tools 能力，Agent V0 默认使用已验证支持工具调用的 `qwen2.5:7b`
-- `.env` 修改后必须重启后端才生效
-
-## Qdrant 向量后端
-
-默认 `VECTOR_BACKEND=sqlite`，保持单进程 SQLite + FTS + 本地向量比对，前端接口不需要变化。
-
-如果知识库 chunk 数量较大，可以切到 Qdrant：
-
-```env
-VECTOR_BACKEND=qdrant
-QDRANT_URL=http://127.0.0.1:6333
-QDRANT_COLLECTION=knowledge_chunks
-```
-
-切换后：
-- SQLite 向量库仍保存 files/chunks 文本、FTS 和业务元数据
-- AI 指标和 HTTP 日志保存在独立的 `OBSERVABILITY_DB_PATH`
-- Qdrant 保存 chunk 向量和 payload，用于向量召回
-- `/api/search`、`/api/chat/context`、`/api/chat` 的前端调用方式不变
-- 如已有 SQLite 知识库，需要调用 `POST /api/vector-store/reindex` 重建 Qdrant 索引
-
-Qdrant payload 预留了 `tenantId`、`projectId`、`ownerUserId`，后续接用户、项目和权限系统时可以用于检索阶段过滤。
-
-## 鉴权
-
-`API_KEY` 为空时，接口默认开放，适合本地开发。
-
-如果设置了 `API_KEY`，非公开接口需要携带：
-
-```text
-x-api-key: your-api-key
-```
-
-或：
-
-```text
-Authorization: Bearer your-api-key
-```
-
-公开接口：
-
-- `GET /api/health`
-- `/docs`
-- `GET /api/upload/progress/:id`
-- `GET /api/metrics/dashboard` 仅在日志查询已启用且配置 API Key 时注册；页面本身公开，数据接口仍需 API Key
-
-## 图片知识库流程
-
-当前后端图片入库流程如下：
-
-```text
-前端上传图片
-  -> 后端保存原图到 UPLOAD_DIR
-  -> 调用 Ollama /api/generate + VISION_MODEL
-  -> 视觉模型输出 Markdown
-  -> 清理外层 markdown 代码块
-  -> 切块
-  -> 调用 EMBEDDING_MODEL 生成向量
-  -> 写入 SQLite files / chunks / FTS 索引
-  -> 后续聊天通过 RAG 检索使用
-```
-
-重点：
-
-- 前端不需要直接调用视觉模型
-- 前端只需要把图片当普通文件传给 `/api/upload`
-- 图片识别可能很慢，必须接上传进度
-- 重复上传时不要默认 `overwrite=true`
-- 不覆盖时，后端会根据 SHA-256 内容 hash 直接复用已有入库记录
-
-## 知识库上传接口
-
-```http
-POST /api/upload
-Content-Type: multipart/form-data
-```
-
-表单字段：
-
-```text
-file: File
-```
-
-query 参数：
-
-```text
-progressId=前端生成的 UUID，可选
-overwrite=true | false，可选，默认 false
-```
-
-支持文件：
-
-- `.txt`
-- `.md`
-- `.pdf`
-- `.png`
-- `.jpg`
-- `.jpeg`
-- `.webp`
-
-返回示例：
-
-```json
-{
-  "file": {
-    "id": "file-id",
-    "filename": "demo.png",
-    "mimeType": "image/png",
-    "size": 121212,
-    "charCount": 585,
-    "chunkCount": 2,
-    "createdAt": "2026-06-12T02:15:39.978Z",
-    "contentHash": "sha256",
-    "embeddingModel": "bge-m3",
-    "embeddingDim": 1024,
-    "chunkerVersion": 2
-  },
-  "chunks": [
-    {
-      "text": "识别后的知识库文本",
-      "chunkIndex": 0
-    }
-  ],
-  "deduplicated": false,
-  "overwritten": false
-}
-```
-
-字段含义：
-
-- `deduplicated=true`：内容已存在，复用旧记录，没有重新跑视觉模型和 embedding
-- `overwritten=true`：传了 `overwrite=true`，重新解析并替换旧记录
-- `chunks`：本次入库的文本分块，前端可以用来预览图片识别结果
-
-## 上传进度 SSE
-
-```http
-GET /api/upload/progress/:progressId
-```
-
-前端推荐流程：
-
-1. 生成 `progressId`
-2. 先打开 `/api/upload/progress/:progressId`
-3. 再上传 `/api/upload?progressId=...`
-
-进度事件格式：
-
-```text
-event: progress
-data: {"phase":"parsing","percent":68,"message":"正在使用视觉模型 qwen3-vl:2b 识别图片。","done":false}
-```
-
-`phase` 取值：
-
-- `receiving`：接收上传文件
-- `parsing`：解析文本/PDF 或调用视觉模型识别图片
-- `chunking`：切块
-- `embedding`：生成向量
-- `storing`：写入知识库
-- `completed`：完成
-- `failed`：失败
-
-图片上传时最慢的阶段通常是 `parsing` 和 `embedding`。
-
-## 文件管理接口
-
-```http
-GET /api/files
-GET /api/files/:id
-DELETE /api/files/:id
-```
-
-文件详情会返回 chunk 文本，但不会返回完整 embedding 数组，只返回 embedding 维度信息。
-
-前端建议展示：
-
-- 文件名
-- 文件类型
-- 文件大小
-- 字符数
-- chunk 数
-- embedding 模型和维度
-- 创建时间
-- chunk 文本预览
-
-## 向量库状态
-
-```http
-GET /api/vector-store/status
-```
-
-用于检查当前知识库是否和当前 `EMBEDDING_MODEL` 兼容。
-
-关键字段：
-
-- `fileCount`
-- `chunkCount`
-- `currentEmbeddingModel`
-- `compatibleChunkCount`
-- `incompatibleChunkCount`
-- `embeddingDistributions`
-- `needsReindex`
-
-如果 `needsReindex=true`，说明当前库里有旧模型/旧维度的向量，建议清空并重新上传知识库。
-
-重置接口：
-
-```http
-POST /api/vector-store/reset
-Content-Type: application/json
-```
-
-重建向量索引接口：
-
-```http
-POST /api/vector-store/reindex
-Content-Type: application/json
-```
-
-请求体可选：
-
-```json
-{
-  "fileId": "file-id"
-}
-```
-
-`VECTOR_BACKEND=sqlite` 时该接口会返回 `skipped=true`；`VECTOR_BACKEND=qdrant` 时会从 SQLite chunks 重新 upsert 到 Qdrant。
-
-请求体：
-
-```json
-{
-  "confirm": "RESET_VECTOR_STORE"
-}
-```
-
-## RAG 检索调试
-
-```http
-GET /api/search?q=问题&topK=5&minScore=0.2
-```
-
-返回每个命中 chunk：
-
-- `filename`
-- `chunkIndex`
-- `score`
-- `vectorScore`
-- `keywordScore`
-- `text`
-
-这个接口用于前端调试“为什么模型有没有引用知识库”。
-
-## 聊天接口
-
-```http
-POST /api/chat
-Content-Type: application/json
-```
-
-请求示例：
+向 `POST /api/chat` 发送 JSON：
 
 ```json
 {
   "provider": "ollama",
   "model": "qwen3:8b",
   "rag": "auto",
+  "topK": 5,
+  "minScore": 0.6,
   "messages": [
-    {
-      "role": "user",
-      "content": "根据知识库回答这张图片里的题目内容"
-    }
+    { "role": "user", "content": "根据知识库列出项目的缓存策略" }
   ]
 }
 ```
 
-参数说明：
-
-- `provider`：`ollama`、`openai`、`anthropic`
-- `model`：模型名称；不传时使用厂商默认模型
-- `rag`：
-  - `"auto"`：后端根据问题和检索命中自动判断
-  - `true`：强制检索知识库
-  - `false`：不检索，直接调用模型
-- `fileId`：可选，只检索某个文件
-- `topK`：可选，覆盖本次检索数量
-- `minScore`：可选，覆盖本次最低分数
-- `compareId`：可选，用于多模型对比统计
-
-响应是统一 NDJSON 流：
+可使用 `fileId` 限定文件，使用 `compareId` 关联模型对比。响应为 `application/x-ndjson`：
 
 ```json
 {"message":{"role":"assistant","content":"部分回答"},"done":false}
 {"message":{"role":"assistant","content":""},"done":true}
 ```
 
-前端需要逐行解析 JSON，累加 `message.content`。
+客户端按换行解析 JSON 并累加 `message.content`；一次网络读取可能包含多行，也可能只包含半行。
 
-## RAG 上下文预览
+| 模式 | 实际行为 |
+| --- | --- |
+| `false` | 跳过检索 |
+| `true` | 执行检索，检索异常报错；空结果不注入材料 |
+| `auto` | 检索异常回退普通聊天；有结果后按意图和分数判断 |
 
-```http
-POST /api/chat/context
-Content-Type: application/json
-```
+自动模式识别“知识库、根据、文档”等显式意图；没有显式意图时，最高命中的综合分需至少为 0.62，或其关键词分至少为 0.55。检索使用消息数组最后一条内容，当前不会自动结合历史改写追问。
 
-请求体和 `/api/chat` 类似，但不会调用模型，只返回本次会不会启用 RAG、命中的 chunk 和将要注入的 system prompt。
+将同一请求发送到 `POST /api/chat/context`，可获得 `enabled`、`prompt`、`results`，不调用对话模型。
 
-这个接口适合做调试面板。
+### 回答风格
 
-## 模型厂商接口
+当前 [rag.ts](server/chat/rag.ts) 使用 `rag-fidelity-v1`，明确要求严格摘录、按原顺序输出，并限制合并、扩写和推断。回答偏向原文复述是当前提示词策略的结果。
 
-查询后端支持的模型厂商：
+需要分析和解释时，应调整提示词并评估回答依据与信息缺口。`RAG_SHOW_CITATIONS=false` 只影响引用展示，不关闭检索。Ollama 思考开关与摘录规则相互独立，开启思考不会自动解除提示词约束；原始思考内容不会返回前端。
 
-```http
-GET /api/providers
-```
+## 可恢复聊天任务
 
-返回示例：
+适合页面刷新、断线后恢复答案展示：
 
-```json
-{
-  "providers": [
-    {
-      "id": "ollama",
-      "name": "Ollama",
-      "defaultModel": "qwen3:8b",
-      "configured": true,
-      "capabilities": {
-        "chatStream": true,
-        "agentTools": false
-      },
-      "agentModels": []
-    },
-    {
-      "id": "openai",
-      "name": "OpenAI",
-      "defaultModel": "gpt-4o",
-      "configured": false
-    },
-    {
-      "id": "anthropic",
-      "name": "Anthropic Claude",
-      "defaultModel": "claude-sonnet-4-5",
-      "configured": false
-    }
-  ]
-}
-```
+1. `POST /api/chat/runs`：除聊天字段外，提供 `conversationId`、`turnId`、`sourceUserMessageId`、`assistantMessageId`；请求头 `Idempotency-Key` 必须等于 `turnId`。
+2. 新建返回 202；相同幂等请求复用任务返回 200。客户端保存 `runId`。
+3. `GET /api/chat/runs/:runId` 读取快照，`GET /api/chat/runs/:runId/events` 订阅 SSE。
+4. 重连时用 `Last-Event-ID` 提交已收到的事件序号，重放后续事件。
+5. `DELETE /api/chat/runs/:runId` 主动取消生成。
 
-查询本地 Ollama 模型：
+关闭页面或 SSE 只停止订阅，不取消后台生成。恢复展示不等于服务重启后继续推理：启动时遗留的活跃任务会被标记失败。模板默认保留终态任务 7 天，输出字符数和事件数也有上限。
 
-```http
-GET /api/tags
-```
+## Agent
 
-## Agent V0
+Agent 通过独立的 `POST /api/agent` 提供受控工具调用，不等同于 RAG 聊天。
 
-Agent V0 是独立于 `/api/chat` 的受控运行环境，当前支持后端 Ollama、兼容旧请求的 `calculator-v0`，以及包含计算器和日期时间工具的 `tools-v0`。Agent 关闭时路由不会注册。
+- 配置 `AGENT_OLLAMA_MODELS`、`AGENT_OPENAI_MODELS`、`AGENT_ANTHROPIC_MODELS` 白名单。
+- 模板 Ollama Agent 模型为 `qwen2.5:7b`，需要另行拉取。
+- 云端 Agent 白名单默认为空，不开放相应模型。
+- 超时、队列、工具结果长度、默认时区和调试结果开关见 `.env.example`。
 
-```env
-AGENT_ENABLED=true
-AGENT_ACCESS_MODE=api-key
-AGENT_API_KEY=replace-with-a-random-secret
-AGENT_OLLAMA_MODELS=qwen2.5:7b
-AGENT_DEFAULT_TIME_ZONE=Asia/Shanghai
-AGENT_DEBUG_TOOL_RESULTS=false
-```
+Agent 使用 NDJSON 事件流。具体请求字段和校验规则以运行中的 Swagger 为准。
 
-请求示例：
+## 接口索引
 
-```http
-POST /api/agent
-Content-Type: application/json
-x-agent-api-key: replace-with-a-random-secret
+| 方法与路径 | 用途 |
+| --- | --- |
+| `GET /api/health` | 健康检查 |
+| `POST /api/upload` | 入库 |
+| `GET /api/upload/progress/:id` | 进度 SSE |
+| `GET /api/files`、`GET /api/files/:id` | 文件列表和详情 |
+| `DELETE /api/files/:id` | 删除指定文件 |
+| `GET /api/search` | 检索调试 |
+| `GET /api/vector-store/status` | 规模及兼容状态 |
+| `POST /api/vector-store/reindex` | 重建 Qdrant 索引 |
+| `POST /api/vector-store/reset` | 清空知识库 |
+| `POST /api/chat/context`、`POST /api/chat` | RAG 预览和聊天 |
+| `POST /api/chat/runs` | 创建生成任务 |
+| `GET /api/chat/runs/:runId`、`GET /api/chat/runs/:runId/events` | 快照和事件 |
+| `DELETE /api/chat/runs/:runId` | 取消生成 |
+| `GET /api/providers`、`GET /api/tags` | 厂商及模型查询 |
+| `POST /api/agent` | 可选 Agent |
+| `GET /api/metrics/summary`、`GET /api/metrics/providers`、`GET /api/metrics/requests` | 调用指标 |
+| `GET /api/metrics/compare/:compareId` | 调用对比 |
+| `GET /api/metrics/dashboard` | 统计面板 |
+| `GET /api/logs/summary`、`GET /api/logs/requests`、`GET /api/logs/errors` | 结构化日志 |
+| `GET /api/logs/requests/:requestId` | 请求关联详情 |
+| `GET /api/http-logs` | HTTP 日志兼容入口 |
 
-{
-  "agentProfile": "tools-v0",
-  "provider": "ollama",
-  "model": "qwen2.5:7b",
-  "messages": [
-    { "role": "user", "content": "请计算 12 乘以 35" }
-  ]
-}
-```
+重置接口要求 JSON `{"confirm":"RESET_VECTOR_STORE"}`，会清空知识库。完整字段和响应结构见 `/docs`。
 
-`tools-v0` 只允许后端注册的两个无副作用工具：
+## 存储与 Qdrant
 
-- `calculator`：两个有限数字的加、减、乘、除
-- `datetime`：当前时间、IANA 时区转换、日期加减、时间差、日期属性分析和 Unix 时间戳转换
-- `datetime.difference_from_now`：一次计算当前时间到当地今天/明天/昨天目标时刻的差值，避免模型自行换算
+| 模板路径 | 数据 |
+| --- | --- |
+| `server/data/vector-store.sqlite` | 文件、切块、向量和全文索引 |
+| `server/data/observability.sqlite` | 请求、调用与应用事件 |
+| `server/data/generation.sqlite` | 生成任务、答案与事件 |
+| `server/data/uploads` | 原始上传图片 |
 
-`datetime` 使用 ISO 8601 时间和 IANA 时区（例如 `Asia/Shanghai`）。不带 `Z` 或 UTC offset 的本地时间必须提供时区；`CST` 等有歧义的缩写会被拒绝。日期加减区分“日历日”和“固定小时”，并按真实夏令时规则计算。
+三类数据库必须使用不同路径。日志默认不保存问题预览或 IP；生成库会持久化答案，不应与日志脱敏策略混淆。
 
-`AGENT_DEFAULT_TIME_ZONE` 用于用户未明确说明时区的本地时间问题。配置后 Agent 会直接采用该时区调用工具，不再追问；用户明确提供的 IANA 时区仍具有更高优先级。
+切换 Qdrant 时设置 `VECTOR_BACKEND=qdrant`、`QDRANT_URL` 及必要的密钥和集合配置，再通过 reindex 接口导入已有向量。SQLite 仍保存元数据和全文索引。SQLite 后端执行 reindex 会跳过。
 
-响应类型为 `application/x-ndjson`。每个事件都包含 `version`、`sequence`、`requestId`、`agentRunId`、`step` 和 `timestamp`。一次运行只允许一个终态：`agent_completed`、`agent_failed` 或 `agent_cancelled`。
+更换 Embedding 模型后先检查 status 接口。Qdrant reindex 只重新写入已有向量，不会用新模型重新计算；模型或维度不兼容时需要重新入库。租户、项目和用户字段是预留配置，不代表已实现完整多用户权限隔离。
 
-前端不能提交 System Prompt、工具列表、Tool Call、Tool Result 或模型厂商 API Key。默认执行过程只展示模型阶段和脱敏工具状态，不返回原始思维链、完整工具参数或内部错误。
+## 开发与验证
 
-本地调试可设置 `AGENT_DEBUG_TOOL_RESULTS=true`，此时 `tool_completed.data.result` 会返回经过敏感字段脱敏和长度限制的工具结果，前端执行过程会直接展示。该开关不影响工具结果继续返回给模型，生产环境应保持关闭。显示长度由 `AGENT_DEBUG_TOOL_RESULT_MAX_CHARS` 控制。
+| 命令 | 用途 |
+| --- | --- |
+| `npm run dev:server` | tsx watch 开发启动 |
+| `npm run typecheck` | 静态检查 |
+| `npm run verify` | 切块、去重、向量库和混合检索 |
+| `npm run verify:http` | HTTP 接口 |
+| `npm run verify:agent`、`npm run verify:agent:http` | Agent 逻辑和 HTTP |
+| `npm run verify:generation` | 任务存储 |
+| `npm run verify:generation:maintenance` | 恢复与清理 |
+| `npm run verify:generation:service` | 后台生成服务 |
+| `npm run verify:chat:runs`、`npm run verify:chat:sse` | 聊天任务与 SSE |
+| `npm run verify:provider:abort` | 模型请求中止 |
+| `npm run verify:observability` | 日志、迁移、查询与脱敏 |
 
-## 指标和日志接口
+`npm test` 仍是占位脚本，会失败。尚未提供生产 `build` 或 `start` 脚本。`verify` 使用临时目录中的独立 SQLite 库，无需默认停止业务服务。
 
-以下接口仅在 `LOG_QUERY_ENABLED=true` 且存在有效日志查询密钥时注册。优先使用 `LOG_QUERY_API_KEY`；列表接口未指定时间时默认查询最近 24 小时。
+自动验证不代替真实模型质量评估，RAG 应使用实际资料和固定问题做端到端检查。
 
-结构化日志：
-
-```http
-GET /api/logs/summary
-GET /api/logs/requests
-GET /api/logs/errors
-GET /api/logs/requests/:requestId
-```
-
-`/api/logs/requests` 和 `/api/logs/errors` 使用不透明游标分页，响应中的 `nextCursor` 原样传给下一页即可。错误接口只返回脱敏错误，不返回 stack 或 rawError。
-
-AI 运行统计兼容接口：
-
-```http
-GET /api/metrics/summary
-GET /api/metrics/providers
-GET /api/metrics/requests
-GET /api/metrics/compare/:compareId
-GET /api/metrics/dashboard
-```
-
-最近 HTTP 访问日志兼容接口：
-
-```http
-GET /api/http-logs?limit=30
-```
-
-这些接口用于排查：
-
-- 模型调用是否成功
-- 是否流式错误
-- 是否超时
-- RAG 是否启用
-- 命中了多少知识库上下文
-- 哪个接口慢
-- 同一个 `requestId` 对应的 HTTP 请求、AI 调用和应用事件
-
-所有响应都会返回 `X-Request-Id`。用户反馈问题时可提供该值进行精确查询。旧 AI 指标迁移到独立观测库时，`request_id` 保持 `NULL`，不会伪造关联，也不会迁移旧问题预览和原始错误。
-
-## 前端接入建议
-
-知识库上传页面至少需要：
-
-- 文件选择
-- 上传按钮
-- 是否覆盖开关，默认关闭
-- SSE 上传进度
-- 上传结果展示
-- chunk 文本预览
-- 文件列表和删除
-
-图片上传时建议展示：
+## 目录结构
 
 ```text
-正在识别图片，可能需要 1 到 8 分钟，请不要重复提交。
+server/
+  index.ts              启动入口
+  app.ts                路由、鉴权、CORS、Swagger 与生命周期
+  router/               上传、聊天、任务、Agent、指标及日志接口
+  chat/                 RAG、请求校验和任务执行
+  generation/           持久化生成任务、SSE 和维护
+  knowledge/            Qdrant 索引及知识库类型
+  llm/                  模型适配与流式协议
+  agent/                Agent 执行器、工具、会话与队列
+  observability/        日志采集、脱敏、存储和查询
+  utils/                配置、切块、Embedding、视觉与向量库
+  scripts/              验证脚本
+  dashboard.html        统计面板
+  data/                 运行数据
+docs/
+  RAG_TEST_REPORT.md    历史评测
 ```
-
-重复文件建议：
-
-- 默认不传 `overwrite=true`
-- 如果返回 `deduplicated=true`，展示“已存在，复用知识库”
-- 只有用户点击“重新解析”时才传 `overwrite=true`
-
-聊天页面至少需要：
-
-- provider 选择
-- model 输入/选择
-- RAG 模式：自动、强制、关闭
-- 流式输出
-- 错误展示
-- 可解释信息：是否启用 RAG、命中文件、chunk 分数
 
 ## 常见问题
 
-### 1. 图片上传很慢
+- **回答只摘抄**：检查 context 接口的提示词，当前严格摘录策略限制了分析和扩写。
+- **RAG 未启用**：检查 Embedding 服务、检索结果、分数阈值及自动门控；强制模式空结果也不注入材料。
+- **响应慢**：区分检索与生成耗时，再检查硬件、模型大小、思考开关和超时。
+- **日志或 Agent 返回 404**：检查功能开关及对应鉴权是否满足注册条件。
+- **Ollama 连接失败**：确认服务已启动且模型存在；localhost 存在 IPv4/IPv6 差异时改为 `http://127.0.0.1:11434`。
+- **端口占用**：用 `Get-NetTCPConnection -LocalPort 3001` 检查，或修改 `PORT` 后重启。
+- **中文乱码**：PowerShell 读取文件时使用 `Get-Content -Encoding UTF8`，不要把错误解码的内容再次写回。
 
-本地 `qwen3-vl:2b` 识别图片可能需要几分钟。需要接 SSE 进度，不要让前端自己短超时。
-
-### 2. 返回 `VISION_MODEL_UNAVAILABLE`
-
-检查：
-
-```powershell
-ollama list
-curl http://127.0.0.1:11434/api/tags
-```
-
-确认 `VISION_MODEL` 配置的模型存在，例如：
-
-```env
-VISION_MODEL=qwen3-vl:2b
-```
-
-### 3. 返回 `EMBEDDING_SERVICE_UNAVAILABLE`
-
-检查：
-
-```env
-EMBEDDING_MODEL=bge-m3
-OLLAMA_URL=http://127.0.0.1:11434
-```
-
-确认模型存在：
-
-```powershell
-ollama pull bge-m3
-```
-
-如果库里已经有同一张图，但前端仍报错，可能是重复上传时传了 `overwrite=true`，导致后端重新跑视觉识别和 embedding。默认不要覆盖。
-
-### 4. 修改 `.env` 后没有效果
-
-`.env` 只在后端启动时读取。修改后必须重启：
-
-```powershell
-npm run dev:server
-```
-
-### 5. CORS 报错
-
-把前端地址加入：
-
-```env
-CORS_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
-```
-
-然后重启后端。
-
-### 6. verify 报 SQLite EBUSY
-
-说明后端还在占用 SQLite 文件。先停掉后端进程，再运行：
-
-```powershell
-npm run verify
-```
-
-## 当前限制
-
-- 上传文件会读入内存，Fastify multipart 限制为 10 MB
-- 向量相似度仍在 JavaScript 中遍历计算，适合小型/本地知识库
-- 图片识别依赖本地 VL 模型，速度取决于硬件
-- 图片识别结果当前以 chunk 形式入库，尚未单独建 parsed document 表
-- 批量图片入库建议后续改成后台任务队列
-
-## 推荐后续演进
-
-- 上传任务化：返回 `taskId`，后台处理图片识别和 embedding
-- 单独保存图片识别 Markdown，方便重新 embedding 和模型升级对比
-- 批量入库队列：支持取消、重试、失败列表
-- 前端增加 RAG 命中解释面板
-- 向量检索迁移到专用向量索引或向量数据库
+相关资料：[RAG 测试报告](docs/RAG_TEST_REPORT.md)、[图片知识库与前端对接说明](VISION_RAG_FRONTEND_DESIGN.md)。
